@@ -2,7 +2,7 @@
 feature: touch-and-review-fixes
 status: delivered
 updated: 2026-11-12
-source: feature/touch-and-review-fixes
+source: https://github.com/ycyx1994/lofi-room/pull/1
 ---
 
 # 触摸支持与 Review 修复
