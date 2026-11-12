@@ -1,16 +1,20 @@
 package com.lofiroom.tv
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.GestureDetector
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import android.widget.AdapterView
 import android.widget.BaseAdapter
 import android.widget.FrameLayout
 import android.widget.ListView
@@ -26,6 +30,7 @@ import com.lofiroom.tv.ui.WallpaperView
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
 
 class MainActivity : Activity() {
 
@@ -54,6 +59,39 @@ class MainActivity : Activity() {
     private val fontSerif: Typeface by lazy { loadFont("fonts/CormorantGaramond.ttf", Typeface.SERIF) } // #5
     private val fontSans: Typeface by lazy { loadFont("fonts/Jost.ttf", Typeface.SANS_SERIF) }
 
+    // #10 触摸手势（翻页式）：轻点=播放/暂停，左右滑=下/上一首，上下滑=音量，长按=面板
+    private val gestureDetector by lazy {
+        GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean = true
+
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                engine.togglePlay()
+                return true
+            }
+
+            override fun onLongPress(e: MotionEvent) {
+                togglePanel()
+            }
+
+            override fun onFling(
+                e1: MotionEvent?, e2: MotionEvent,
+                velocityX: Float, velocityY: Float
+            ): Boolean {
+                val start = e1 ?: return false
+                val dx = e2.x - start.x
+                val dy = e2.y - start.y
+                if (abs(dx) > abs(dy)) {
+                    // 翻页习惯：左滑=下一首，右滑=上一首（与遥控器 ←→ 方向相反）
+                    if (dx < 0) engine.next() else engine.prev()
+                } else {
+                    changeVolume(if (dy < 0) +0.05f else -0.05f)
+                }
+                return true
+            }
+        })
+    }
+
+    @SuppressLint("ClickableViewAccessibility") // 手势由 GestureDetector 处理，无需 performClick
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -70,15 +108,18 @@ class MainActivity : Activity() {
             override fun onTrackChanged(track: Track, index: Int, total: Int) {
                 totalTracks = total
                 bindTrack(track, index, total)
+                if (panelWrap.visibility == View.VISIBLE) trackList.invalidateViews()
             }
 
             override fun onPlayingChanged(playing: Boolean) {
                 // 静音时 VisualizerView 自行衰减
+                if (panelWrap.visibility == View.VISIBLE) trackList.invalidateViews()
             }
         }
         bindTrack(Playlist.tracks[0], 0, totalTracks)
 
         wallpaper.onWallpaperChange = { index, _ -> rotateCaption(index) }
+        wallpaper.setOnTouchListener { _, event -> gestureDetector.onTouchEvent(event); true }
         wallpaper.start()
         rotateCaption(0)
 
@@ -198,6 +239,14 @@ class MainActivity : Activity() {
     private fun setupPanel() {
         trackList.adapter = TrackAdapter()
         trackList.choiceMode = ListView.CHOICE_MODE_SINGLE
+        // #10 触摸点按曲目行直接播放，行为与遥控器 OK 一致
+        trackList.onItemClickListener = AdapterView.OnItemClickListener { _, _, position, _ ->
+            if (position in Playlist.tracks.indices) engine.playIndex(position)
+            trackList.invalidateViews()
+            togglePanel()
+        }
+        // #10 点面板外暗色区域关闭（卡片本体 clickable 消费，点卡片不关闭）
+        panelWrap.setOnClickListener { togglePanel() }
     }
 
     private fun togglePanel() {

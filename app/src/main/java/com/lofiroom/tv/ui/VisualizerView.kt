@@ -44,7 +44,12 @@ class VisualizerView @JvmOverloads constructor(
 
         val tap = this.tap
         if (tap != null) {
-            if (tap.playing) tap.snapshot(levels) else tap.decay()
+            if (tap.playing) {
+                tap.snapshot(levels)
+            } else {
+                tap.decay()
+                tap.snapshot(levels) // #8 衰减后必须拷贝出来，否则柱子冻结在暂停帧
+            }
         }
 
         if (gradW != w.toInt()) {
