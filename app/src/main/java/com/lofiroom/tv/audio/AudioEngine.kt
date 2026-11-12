@@ -73,7 +73,7 @@ class AudioEngine(context: Context, private val tap: VisualizerTap) {
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                // 坏曲目自动跳下一首；连续失败一轮说明全部损坏，停止重试避免忙循环
+                // #10 坏曲目自动跳下一首；连续失败一轮说明全部损坏，停止重试避免忙循环
                 consecutiveErrors++
                 if (consecutiveErrors >= Playlist.tracks.size) {
                     player.playWhenReady = false
@@ -81,7 +81,7 @@ class AudioEngine(context: Context, private val tap: VisualizerTap) {
                 }
                 player.seekToNextMediaItem()
                 player.prepare()
-                player.playWhenReady = true
+                // 不改 playWhenReady：保持用户暂停/播放意图，正常恢复时它本身即 true
             }
         })
 

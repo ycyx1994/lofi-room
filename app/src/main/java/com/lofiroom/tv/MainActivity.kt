@@ -59,7 +59,7 @@ class MainActivity : Activity() {
     private val fontSerif: Typeface by lazy { loadFont("fonts/CormorantGaramond.ttf", Typeface.SERIF) } // #5
     private val fontSans: Typeface by lazy { loadFont("fonts/Jost.ttf", Typeface.SANS_SERIF) }
 
-    // #10 触摸手势（翻页式）：轻点=播放/暂停，左右滑=下/上一首，上下滑=音量，长按=面板
+    // #11 触摸手势（翻页式）：轻点=播放/暂停，左右滑=下/上一首，上下滑=音量，长按=面板
     private val gestureDetector by lazy {
         GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDown(e: MotionEvent): Boolean = true
@@ -239,13 +239,13 @@ class MainActivity : Activity() {
     private fun setupPanel() {
         trackList.adapter = TrackAdapter()
         trackList.choiceMode = ListView.CHOICE_MODE_SINGLE
-        // #10 触摸点按曲目行直接播放，行为与遥控器 OK 一致
+        // #11 触摸点按曲目行直接播放，行为与遥控器 OK 一致
         trackList.onItemClickListener = AdapterView.OnItemClickListener { _, _, position, _ ->
             if (position in Playlist.tracks.indices) engine.playIndex(position)
             trackList.invalidateViews()
             togglePanel()
         }
-        // #10 点面板外暗色区域关闭（卡片本体 clickable 消费，点卡片不关闭）
+        // #11 点面板外暗色区域关闭（卡片本体 clickable 消费，点卡片不关闭）
         panelWrap.setOnClickListener { togglePanel() }
     }
 

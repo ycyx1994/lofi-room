@@ -64,17 +64,26 @@ class WallpaperView @JvmOverloads constructor(
 
     private fun loadList() {
         executor.execute {
-            // #8 目录列举与首图解码都放后台线程，避免主线程磁盘 I/O
+            // #9 目录列举与首图解码都放后台线程，避免主线程磁盘 I/O
             val found = (context.assets.list("wallpapers") ?: emptyArray()).sorted()
-            val bmp = if (found.isEmpty()) null else decode(found[0])
+            // #9 跳过排在前面的坏文件，找到第一张能解码的
+            var start = 0
+            var bmp: Bitmap? = null
+            while (start < found.size && bmp == null) {
+                bmp = decode(found[start])
+                if (bmp == null) start++
+            }
             post {
                 if (!running) return@post
                 names = found
-                if (names.isEmpty() || bmp == null) return@post
-                current = bmp
+                if (names.isEmpty()) return@post
+                // #9 无论成败都武装定时器，否则 doFrame 的 switchAtMs>0 守卫会让 advance 永不触发
                 switchAtMs = System.currentTimeMillis()
                 totalMs = holdMs
-                onWallpaperChange?.invoke(0, names.size)
+                if (bmp == null) return@post
+                index = start
+                current = bmp
+                onWallpaperChange?.invoke(index, names.size)
                 invalidate()
             }
         }
@@ -89,11 +98,11 @@ class WallpaperView @JvmOverloads constructor(
             val bmp = decode(nextName)
             post {
                 advancing = false // #1 无论成败都复位标志
-                index = next // #8 失败也推进，避免卡在同一个坏文件上
+                index = next // #9 失败也推进，避免卡在同一个坏文件上
                 if (!running) return@post
                 if (bmp == null) {
                     failStreak++
-                    // 整轮全失败则退避 holdMs，防止坏资产导致忙循环
+                    // #9 整轮全失败则退避 holdMs，防止坏资产导致忙循环
                     if (failStreak >= names.size) switchAtMs = System.currentTimeMillis()
                     return@post
                 }
