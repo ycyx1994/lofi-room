@@ -37,6 +37,7 @@ class WallpaperView @JvmOverloads constructor(
     @Volatile
     private var running = true
     private var advancing = false // #1 防重入：解码未回前不再重复触发 advance
+    private var failStreak = 0 // 连续解码失败计数，完整一轮无一成功则退避
     private var frameCount = 0L
 
     private val frameCallback = object : Choreographer.FrameCallback {
@@ -62,16 +63,27 @@ class WallpaperView @JvmOverloads constructor(
     }
 
     private fun loadList() {
-        names = (context.assets.list("wallpapers") ?: emptyArray()).sorted()
-        if (names.isEmpty()) return
         executor.execute {
-            val bmp = decode(0)
+            // #9 目录列举与首图解码都放后台线程，避免主线程磁盘 I/O
+            val found = (context.assets.list("wallpapers") ?: emptyArray()).sorted()
+            // #9 跳过排在前面的坏文件，找到第一张能解码的
+            var start = 0
+            var bmp: Bitmap? = null
+            while (start < found.size && bmp == null) {
+                bmp = decode(found[start])
+                if (bmp == null) start++
+            }
             post {
-                if (!running || bmp == null) return@post
-                current = bmp
+                if (!running) return@post
+                names = found
+                if (names.isEmpty()) return@post
+                // #9 无论成败都武装定时器，否则 doFrame 的 switchAtMs>0 守卫会让 advance 永不触发
                 switchAtMs = System.currentTimeMillis()
                 totalMs = holdMs
-                onWallpaperChange?.invoke(0, names.size)
+                if (bmp == null) return@post
+                index = start
+                current = bmp
+                onWallpaperChange?.invoke(index, names.size)
                 invalidate()
             }
         }
@@ -81,14 +93,22 @@ class WallpaperView @JvmOverloads constructor(
         if (names.isEmpty() || advancing) return // #1 防重入
         advancing = true
         val next = (index + 1) % names.size
+        val nextName = names[next] // 主线程捕获，后台线程不读 names
         executor.execute {
-            val bmp = decode(next)
+            val bmp = decode(nextName)
             post {
                 advancing = false // #1 无论成败都复位标志
-                if (!running || bmp == null) return@post
+                index = next // #9 失败也推进，避免卡在同一个坏文件上
+                if (!running) return@post
+                if (bmp == null) {
+                    failStreak++
+                    // #9 整轮全失败则退避 holdMs，防止坏资产导致忙循环
+                    if (failStreak >= names.size) switchAtMs = System.currentTimeMillis()
+                    return@post
+                }
+                failStreak = 0
                 previous = current
                 current = bmp
-                index = next
                 switchAtMs = System.currentTimeMillis()
                 totalMs = holdMs
                 onWallpaperChange?.invoke(index, names.size)
@@ -96,8 +116,8 @@ class WallpaperView @JvmOverloads constructor(
         }
     }
 
-    private fun decode(i: Int): Bitmap? = try {
-        val path = "wallpapers/${names[i]}"
+    private fun decode(name: String): Bitmap? = try {
+        val path = "wallpapers/$name"
         // #2 先探边界，按屏幕尺寸算 inSampleSize，避免超大位图常驻内存
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         context.assets.open(path).use { BitmapFactory.decodeStream(it, null, opts) }

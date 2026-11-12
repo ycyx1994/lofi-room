@@ -6,6 +6,7 @@ import android.os.Looper
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -30,6 +31,7 @@ class AudioEngine(context: Context, private val tap: VisualizerTap) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val player: ExoPlayer
     var listener: Listener? = null
+    private var consecutiveErrors = 0
 
     init {
         val tee = TeeAudioProcessor(tap)
@@ -65,8 +67,21 @@ class AudioEngine(context: Context, private val tap: VisualizerTap) {
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) consecutiveErrors = 0
                 tap.playing = isPlaying
                 mainHandler.post { listener?.onPlayingChanged(isPlaying) }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                // #10 坏曲目自动跳下一首；连续失败一轮说明全部损坏，停止重试避免忙循环
+                consecutiveErrors++
+                if (consecutiveErrors >= Playlist.tracks.size) {
+                    player.playWhenReady = false
+                    return
+                }
+                player.seekToNextMediaItem()
+                player.prepare()
+                // 不改 playWhenReady：保持用户暂停/播放意图，正常恢复时它本身即 true
             }
         })
 
