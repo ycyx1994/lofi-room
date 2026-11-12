@@ -1,6 +1,6 @@
 ---
 feature: touch-and-review-fixes
-status: designed
+status: delivered
 updated: 2026-11-12
 source: feature/touch-and-review-fixes
 ---
@@ -8,6 +8,10 @@ source: feature/touch-and-review-fixes
 # 触摸支持与 Review 修复
 
 ## Report
+
+**What was built** — 暂停波形衰减、轮播坏图跳过（含首图失败跳过与整轮退避）、出错自动跳下一首（保持播放意图）、壁纸 I/O 线程化、面板 PLAYING 随状态刷新，以及翻页式触摸手势（轻点/左右滑/上下滑/长按）与面板点选，README 同步补充触摸说明。
+
+**Verification** — `./gradlew :app:assembleDebug` 基线、实现后、评审修复后共三轮，均 BUILD SUCCESSFUL（仓库无测试套件）。独立评审首轮 8/9 任务通过、1 个 critical（loadList 首图失败死端）；修复后复审确认三项均 FIXED、无新增问题。
 
 ## [S1] Problem
 
@@ -28,7 +32,7 @@ source: feature/touch-and-review-fixes
 
 ### S2.2 轮播坏图跳过
 
-`WallpaperView.advance()` 解码失败时也把 `index` 推进到 `next`，下一帧重试下一张而非同一张。连续失败计数 `failStreak`：达 `names.size`（完整一轮无一成功）时置 `switchAtMs = now` 暂停轮询 `holdMs`，避免全部文件损坏时的忙循环；任一成功即清零。`decode` 改为接收文件名参数（不再读 `names` 字段），消除跨线程读写。
+`WallpaperView.advance()` 解码失败时也把 `index` 推进到 `next`，下一帧重试下一张而非同一张。连续失败计数 `failStreak`：达 `names.size`（完整一轮无一成功）时置 `switchAtMs = now` 暂停轮询 `holdMs`，避免全部文件损坏时的忙循环；任一成功即清零。`decode` 改为接收文件名参数（不再读 `names` 字段），消除跨线程读写。`loadList()` 初始加载同样跳过排在前面的坏文件并**无条件武装 `switchAtMs`**（否则 `doFrame` 的 `switchAtMs > 0` 守卫会让 `advance()` 永不触发）。
 
 ### S2.3 触摸手势（翻页式）
 
@@ -71,14 +75,16 @@ source: feature/touch-and-review-fixes
 
 ## Tasks
 
-- [ ] T1: 修复波形暂停衰减 — acceptance: 暂停后波形柱在 1–2 秒内缓缓落到底部而非冻结 (covers: S2.1)
-- [ ] T2: 修复轮播坏图卡死 — acceptance: 夹入一张损坏 jpg 后轮播跳过它继续换图；全部损坏时不再忙循环 (covers: S2.2)
-- [ ] T3: 实现触摸手势 — acceptance: 轻点播放/暂停、左右滑切歌、上下滑调音量、长按开关面板 (covers: S2.3)
-- [ ] T4: 面板触摸点选 — acceptance: 点按曲目行即播放并收起面板；点暗色区域关闭面板 (covers: S2.4)
-- [ ] T5: 出错自动跳下一首 — acceptance: 移除/损坏一个 m4a 后播放自动进入下一首，全部坏时停止轮询 (covers: S2.5)
-- [ ] T6: loadList 挪出主线程 — acceptance: 壁纸目录列举与首图解码不在主线程执行 (covers: S2.6)
-- [ ] T7: 面板 PLAYING 随状态刷新 — acceptance: 自动切歌或暂停/恢复后面板标记同步 (covers: S2.7)
-- [ ] T8: README 补充触摸交互说明 — acceptance: README 遥控器表格旁有触摸手势表
-- [ ] T9: 构建验证 — acceptance: `./gradlew :app:assembleDebug` 通过
+- [x] T1: 修复波形暂停衰减 — acceptance: 暂停后波形柱在 1–2 秒内缓缓落到底部而非冻结 (covers: S2.1)
+- [x] T2: 修复轮播坏图卡死 — acceptance: 夹入一张损坏 jpg 后轮播跳过它继续换图；全部损坏时不再忙循环 (covers: S2.2)
+- [x] T3: 实现触摸手势 — acceptance: 轻点播放/暂停、左右滑切歌、上下滑调音量、长按开关面板 (covers: S2.3)
+- [x] T4: 面板触摸点选 — acceptance: 点按曲目行即播放并收起面板；点暗色区域关闭面板 (covers: S2.4)
+- [x] T5: 出错自动跳下一首 — acceptance: 移除/损坏一个 m4a 后播放自动进入下一首，全部坏时停止轮询 (covers: S2.5)
+- [x] T6: loadList 挪出主线程 — acceptance: 壁纸目录列举与首图解码不在主线程执行 (covers: S2.6)
+- [x] T7: 面板 PLAYING 随状态刷新 — acceptance: 自动切歌或暂停/恢复后面板标记同步 (covers: S2.7)
+- [x] T8: README 补充触摸交互说明 — acceptance: README 遥控器表格旁有触摸手势表
+- [x] T9: 构建验证 — acceptance: `./gradlew :app:assembleDebug` 通过
 
 ## Journey log
+
+- 首轮独立评审发现 T2 有个未覆盖的死端：`loadList()` 首图解码失败时不武装 `switchAtMs`，`doFrame` 的 `switchAtMs > 0` 守卫让 `advance()` 永不触发——排序排最前的坏文件仍会卡死轮播，且 `failStreak` 退避路径对其设计场景（全部损坏）不可达。修复为 loadList 循环跳过前置坏文件并无条件武装定时器。教训：凡是有"启动路径 + 轮询路径"双入口的状态机，失败处理必须覆盖启动路径，否则轮询侧的防护是死代码。
