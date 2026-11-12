@@ -1,0 +1,220 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/ink"
+    tools:ignore="RtlHardcoded">
+
+    <!-- 壁纸轮播（自绘 crossfade + Ken Burns） -->
+    <com.lofiroom.tv.ui.WallpaperView
+        android:id="@+id/wallpaper"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- 上下渐隐遮罩 -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="200dp"
+        android:background="@drawable/scrim_top" />
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="260dp"
+        android:layout_gravity="bottom"
+        android:background="@drawable/scrim_bottom" />
+
+    <!-- 中央标题组：小标签 + 品牌字 + 波形 -->
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center_horizontal|top"
+        android:layout_marginTop="52dp"
+        android:gravity="center_horizontal"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:letterSpacing="0.55"
+            android:text="@string/label_playlist"
+            android:textColor="@color/cream_dim"
+            android:textSize="11sp" />
+
+        <TextView
+            android:id="@+id/brand"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:letterSpacing="0.3"
+            android:text="@string/brand"
+            android:textColor="@color/cream"
+            android:textSize="42sp" />
+
+        <com.lofiroom.tv.ui.VisualizerView
+            android:id="@+id/visualizer"
+            android:layout_width="520dp"
+            android:layout_height="64dp"
+            android:layout_marginTop="16dp" />
+    </LinearLayout>
+
+    <!-- 左下诗意文案 -->
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="start|bottom"
+        android:layout_marginStart="56dp"
+        android:layout_marginBottom="52dp"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/caption_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:letterSpacing="0.5"
+            android:textColor="@color/gold"
+            android:textSize="11sp"
+            tools:text="SLOW DOWN" />
+
+        <TextView
+            android:id="@+id/caption_cn"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:textColor="@color/cream"
+            android:textSize="15sp"
+            tools:text="慢下来，让爵士与夜色慢慢发酵" />
+
+        <TextView
+            android:id="@+id/caption_en"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="7dp"
+            android:letterSpacing="0.28"
+            android:textColor="@color/cream_dim"
+            android:textSize="10sp"
+            tools:text="LET JAZZ AND NIGHT AIR FERMENT SLOWLY" />
+    </LinearLayout>
+
+    <!-- 右下曲目信息 -->
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="end|bottom"
+        android:layout_marginEnd="56dp"
+        android:layout_marginBottom="52dp"
+        android:gravity="end"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/track_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="@color/cream"
+            android:textSize="22sp"
+            tools:text="Midnight Espresso" />
+
+        <TextView
+            android:id="@+id/track_sub"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:letterSpacing="0.32"
+            android:textColor="@color/cream_dim"
+            android:textSize="10sp"
+            tools:text="LOFI JAZZ · 72 BPM · 01/03" />
+    </LinearLayout>
+
+    <!-- 右上时钟 -->
+    <TextView
+        android:id="@+id/clock"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="end|top"
+        android:layout_marginTop="48dp"
+        android:layout_marginEnd="52dp"
+        android:letterSpacing="0.18"
+        android:textColor="@color/cream_dim"
+        android:textSize="13sp"
+        tools:text="23:47" />
+
+    <!-- 播放列表面板 -->
+    <FrameLayout
+        android:id="@+id/panel_wrap"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#66000000"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="480dp"
+            android:layout_height="wrap_content"
+            android:layout_gravity="end|center_vertical"
+            android:layout_marginEnd="60dp"
+            android:background="@drawable/panel_bg"
+            android:orientation="vertical"
+            android:paddingStart="30dp"
+            android:paddingTop="26dp"
+            android:paddingEnd="30dp"
+            android:paddingBottom="22dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:letterSpacing="0.4"
+                android:text="@string/panel_title"
+                android:textColor="@color/gold"
+                android:textSize="11sp" />
+
+            <ListView
+                android:id="@+id/track_list"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:divider="#1AF6F0E6"
+                android:dividerHeight="1dp"
+                android:listSelector="#14D8B57E" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:letterSpacing="0.2"
+                android:text="@string/panel_hint"
+                android:textColor="@color/cream_dim"
+                android:textSize="10sp" />
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- 底部操作提示 -->
+    <TextView
+        android:id="@+id/hint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center_horizontal|bottom"
+        android:layout_marginBottom="18dp"
+        android:letterSpacing="0.22"
+        android:text="@string/hint"
+        android:textColor="#8CF6F0E6"
+        android:textSize="10sp" />
+
+    <!-- 音量 OSD -->
+    <TextView
+        android:id="@+id/vol_osd"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="@drawable/panel_bg"
+        android:letterSpacing="0.3"
+        android:paddingStart="26dp"
+        android:paddingTop="14dp"
+        android:paddingEnd="26dp"
+        android:paddingBottom="14dp"
+        android:textColor="@color/cream"
+        android:textSize="13sp"
+        android:visibility="gone"
+        tools:text="VOL 80%" />
+
+</FrameLayout>

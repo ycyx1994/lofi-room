@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Lofi Room</string>
+    <string name="label_playlist">LOFI ROOM PLAYLIST</string>
+    <string name="brand">CHILLNOVA</string>
+    <string name="hint">OK 播放/暂停&#160;&#160;&#160;← → 切歌&#160;&#160;&#160;↑↓ 音量&#160;&#160;&#160;MENU 播放列表</string>
+    <string name="panel_title">PLAYLIST · 播放列表</string>
+    <string name="panel_hint">↑↓ 选择 · OK 播放 · MENU/BACK 关闭</string>
+</resources>

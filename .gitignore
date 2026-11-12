@@ -1,0 +1,19 @@
+# Gradle / Android 构建产物
+.gradle/
+build/
+app/build/
+local.properties
+
+# IDE / 系统
+.idea/
+*.iml
+.DS_Store
+
+# 中间音频 WAV（可由 tools/generate_music.py 复现）
+build_audio/
+
+# 第三方源码参考副本（不参与构建）
+vendor/
+
+# MiMoCode 会话状态
+.mimocode/
