@@ -22,6 +22,11 @@ class WallpaperView @JvmOverloads constructor(
 
     var onWallpaperChange: ((index: Int, total: Int) -> Unit)? = null
 
+    /** #14 自动轮播开关（默认关，由面板「背景」页签控制） */
+    var autoRotate = false
+    /** #14 启动时显示的壁纸序号（默认 0 = 城市夜景） */
+    var startIndex = 0
+
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val matrix = Matrix()
     private var names: List<String> = emptyList()
@@ -31,8 +36,11 @@ class WallpaperView @JvmOverloads constructor(
     private var switchAtMs = -1L
     private var totalMs = 0L
 
-    private val fadeMs = 1600L
-    private val holdMs = 38_000L
+    private val fadeMs = 2000L // #13 稍长的溶解 + smoothstep 缓动，过渡更柔
+    private val holdMs = 600_000L // #14 自动切换间隔 10 分钟
+    private val kenBurnsMs = 60_000L // 推镜时长（与切换间隔解耦）
+    private var dirCurrent = 1f // #13 推镜方向逐张交替（1=推近，-1=拉远）
+    private var dirPrev = 1f
     private val executor = Executors.newSingleThreadExecutor()
     @Volatile
     private var running = true
@@ -44,7 +52,7 @@ class WallpaperView @JvmOverloads constructor(
         override fun doFrame(frameTimeNanos: Long) {
             if (!running) return
             val elapsed = if (switchAtMs > 0) System.currentTimeMillis() - switchAtMs else 0L
-            if (switchAtMs > 0 && elapsed > holdMs) advance()
+            if (switchAtMs > 0 && autoRotate && elapsed > holdMs) advance() // #14 开关打开才自动换
             // #2 淡入淡出期全帧率；推镜/静止段隔帧 30fps，降低低端盒子 GPU 填充压力
             frameCount++
             val inFade = switchAtMs > 0 && elapsed < fadeMs
@@ -62,12 +70,40 @@ class WallpaperView @JvmOverloads constructor(
         running = false
     }
 
+    val currentIndex: Int get() = index
+    val count: Int get() = names.size
+
+    /** #17 壁纸文件名（供面板缩略图解码，与轮播顺序一致） */
+    fun nameAt(i: Int): String? = names.getOrNull(i)
+
+    /** #14 手动切到指定壁纸（溶解过渡），并重置自动切换计时 */
+    fun show(target: Int) {
+        if (names.isEmpty() || target !in names.indices || advancing || target == index) return
+        advancing = true
+        val targetName = names[target]
+        executor.execute {
+            val bmp = decode(targetName)
+            post {
+                advancing = false
+                if (!running || bmp == null) return@post
+                previous = current
+                current = bmp
+                dirPrev = dirCurrent
+                dirCurrent = -dirCurrent
+                index = target
+                switchAtMs = System.currentTimeMillis()
+                totalMs = kenBurnsMs
+                onWallpaperChange?.invoke(index, names.size)
+            }
+        }
+    }
+
     private fun loadList() {
         executor.execute {
             // #9 目录列举与首图解码都放后台线程，避免主线程磁盘 I/O
             val found = (context.assets.list("wallpapers") ?: emptyArray()).sorted()
-            // #9 跳过排在前面的坏文件，找到第一张能解码的
-            var start = 0
+            // #9 跳过排在前面的坏文件，找到第一张能解码的（从 startIndex 起找，支持记忆的默认图）
+            var start = startIndex.coerceIn(0, (found.size - 1).coerceAtLeast(0))
             var bmp: Bitmap? = null
             while (start < found.size && bmp == null) {
                 bmp = decode(found[start])
@@ -79,7 +115,7 @@ class WallpaperView @JvmOverloads constructor(
                 if (names.isEmpty()) return@post
                 // #9 无论成败都武装定时器，否则 doFrame 的 switchAtMs>0 守卫会让 advance 永不触发
                 switchAtMs = System.currentTimeMillis()
-                totalMs = holdMs
+                totalMs = kenBurnsMs
                 if (bmp == null) return@post
                 index = start
                 current = bmp
@@ -109,8 +145,10 @@ class WallpaperView @JvmOverloads constructor(
                 failStreak = 0
                 previous = current
                 current = bmp
+                dirPrev = dirCurrent
+                dirCurrent = -dirCurrent // #13 逐张交替推近/拉远，避免每张同节奏
                 switchAtMs = System.currentTimeMillis()
-                totalMs = holdMs
+                totalMs = kenBurnsMs
                 onWallpaperChange?.invoke(index, names.size)
             }
         }
@@ -141,9 +179,14 @@ class WallpaperView @JvmOverloads constructor(
         val now = System.currentTimeMillis()
         val elapsed = if (switchAtMs > 0) now - switchAtMs else 0L
 
-        // 旧图淡出（保持在最终推镜位）
+        // #13 smoothstep 缓动的溶解比例（两端慢、中间快，比线性自然）
+        val p = (elapsed.toFloat() / fadeMs).coerceIn(0f, 1f)
+        val eased = p * p * (3f - 2f * p)
+
+        // 旧图淡出：#13 保持自己的推镜轨迹继续漂移，不再跳回基准缩放
         previous?.let {
-            drawBitmap(canvas, it, 1f - (elapsed.toFloat() / fadeMs).coerceIn(0f, 1f), 1f)
+            val prevProgress = 1f + elapsed.toFloat() / totalMs
+            drawBitmap(canvas, it, 1f - eased, zoomFor(prevProgress, dirPrev))
             if (elapsed > fadeMs) {
                 if (it !== current) it.recycle()
                 previous = null
@@ -151,10 +194,14 @@ class WallpaperView @JvmOverloads constructor(
         }
 
         // 新图淡入 + Ken Burns 推镜
-        val alpha = if (previous == null) 1f else (elapsed.toFloat() / fadeMs).coerceIn(0f, 1f)
+        val alpha = if (previous == null) 1f else eased
         val progress = (elapsed.toFloat() / totalMs).coerceIn(0f, 1f)
-        drawBitmap(canvas, bmp, alpha, 1.02f + 0.06f * progress)
+        drawBitmap(canvas, bmp, alpha, zoomFor(progress, dirCurrent))
     }
+
+    /** #13 Ken Burns 缩放：dir=1 从 1.02 推近到 1.08，dir=-1 反向拉远 */
+    private fun zoomFor(progress: Float, dir: Float): Float =
+        if (dir > 0) 1.02f + 0.06f * progress else 1.08f - 0.06f * progress
 
     private fun drawBitmap(canvas: Canvas, bmp: Bitmap, alpha: Float, zoom: Float) {
         if (alpha <= 0f || bmp.isRecycled) return

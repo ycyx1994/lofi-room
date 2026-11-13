@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="92dp"
+    android:background="@drawable/panel_bg">
+
+    <ImageView
+        android:id="@+id/cell_thumb"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_margin="2dp"
+        android:contentDescription="@string/app_name"
+        android:scaleType="fitCenter" />
+
+    <!-- 自动切换开关格（与缩略图共用单元布局） -->
+    <LinearLayout
+        android:id="@+id/cell_toggle"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/cell_toggle_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:letterSpacing="0.15"
+            android:text="@string/auto_rotate"
+            android:textColor="@color/cream_dim"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/cell_toggle_sub"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:letterSpacing="0.1"
+            android:text="@string/auto_rotate_sub"
+            android:textColor="@color/cream_dim"
+            android:textSize="9sp" />
+
+        <TextView
+            android:id="@+id/cell_toggle_state"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="3dp"
+            android:letterSpacing="0.2"
+            android:textColor="@color/gold"
+            android:textSize="18sp"
+            tools:text="ON" />
+    </LinearLayout>
+</FrameLayout>

@@ -161,28 +161,68 @@
             android:paddingEnd="30dp"
             android:paddingBottom="22dp">
 
-            <TextView
-                android:layout_width="wrap_content"
+            <!-- #15 可点页签：触摸端也能切曲目/背景 -->
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:letterSpacing="0.4"
-                android:text="@string/panel_title"
-                android:textColor="@color/gold"
-                android:textSize="11sp" />
+                android:orientation="horizontal">
 
+                <TextView
+                    android:id="@+id/tab_tracks"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:letterSpacing="0.4"
+                    android:paddingEnd="22dp"
+                    android:text="@string/panel_title"
+                    android:textColor="@color/gold"
+                    android:textSize="11sp" />
+
+                <TextView
+                    android:id="@+id/tab_backgrounds"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:letterSpacing="0.4"
+                    android:text="@string/panel_title_bg"
+                    android:textColor="@color/cream_dim"
+                    android:textSize="11sp" />
+            </LinearLayout>
+
+            <!-- #17 固定高度：曲目页与背景页共用同一面板尺寸 -->
             <ListView
                 android:id="@+id/track_list"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="192dp"
                 android:layout_marginTop="16dp"
                 android:divider="#1AF6F0E6"
                 android:dividerHeight="1dp"
                 android:listSelector="#14D8B57E" />
 
+            <GridView
+                android:id="@+id/wall_grid"
+                android:layout_width="match_parent"
+                android:layout_height="192dp"
+                android:layout_marginTop="16dp"
+                android:horizontalSpacing="8dp"
+                android:listSelector="#00000000"
+                android:numColumns="4"
+                android:stretchMode="columnWidth"
+                android:verticalSpacing="8dp"
+                android:visibility="gone" />
+
+            <!-- #17 固定高度：两页签共用同一面板尺寸 -->
             <TextView
+                android:id="@+id/panel_hint"
                 android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="18dp"
+                android:layout_height="30dp"
+                android:layout_marginTop="12dp"
+                android:ellipsize="end"
+                android:gravity="center_vertical"
                 android:letterSpacing="0.2"
+                android:maxLines="1"
                 android:text="@string/panel_hint"
                 android:textColor="@color/cream_dim"
                 android:textSize="10sp" />

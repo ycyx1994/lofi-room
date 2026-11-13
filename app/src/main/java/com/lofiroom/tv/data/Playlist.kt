@@ -5,6 +5,8 @@ data class Track(val title: String, val sub: String, val asset: String)
 
 data class Caption(val label: String, val cn: String, val en: String)
 
+data class Wallpaper(val cn: String, val en: String)
+
 object Playlist {
 
     val tracks = listOf(
@@ -23,6 +25,17 @@ object Playlist {
             "BOSSA NOVA · 84 BPM",
             "music/bossa_candlelight.m4a"
         )
+    )
+
+    /** 壁纸显示名，顺序与 assets/wallpapers/wall_01..07.jpg 一一对应 */
+    val wallpapers = listOf(
+        Wallpaper("城市夜景", "City Night"),
+        Wallpaper("书桌", "Desk"),
+        Wallpaper("客厅", "Interior"),
+        Wallpaper("窗台植物", "Plants"),
+        Wallpaper("壁炉小猫", "Kitten"),
+        Wallpaper("森林单车", "Forest Ride"),
+        Wallpaper("雨窗花田", "Forest Window")
     )
 
     val captions = listOf(
