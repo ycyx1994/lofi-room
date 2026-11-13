@@ -17,6 +17,7 @@ import android.view.WindowManager
 import android.widget.AdapterView
 import android.widget.BaseAdapter
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.ListView
 import android.widget.TextView
 import android.widget.Toast
@@ -52,6 +53,12 @@ class MainActivity : Activity() {
     private lateinit var volOsd: TextView
     private lateinit var panelWrap: FrameLayout
     private lateinit var trackList: ListView
+    private lateinit var splash: FrameLayout
+    private lateinit var splashLogo: ImageView
+
+    private var firstWallReady = false // #12 首张壁纸就绪后才撤启动遮罩
+    private var splashDismissed = false
+    private val bootAtMs = System.currentTimeMillis()
 
     private var captionIndex = 0
     private var totalTracks = Playlist.tracks.size
@@ -118,13 +125,24 @@ class MainActivity : Activity() {
         }
         bindTrack(Playlist.tracks[0], 0, totalTracks)
 
-        wallpaper.onWallpaperChange = { index, _ -> rotateCaption(index) }
+        wallpaper.onWallpaperChange = { index, _ ->
+            rotateCaption(index)
+            if (!firstWallReady) { // #12 首图就绪：满足最短展示时长后撤遮罩
+                firstWallReady = true
+                val wait = (1100 - (System.currentTimeMillis() - bootAtMs)).coerceAtLeast(0)
+                handler.postDelayed({ dismissSplash() }, wait)
+            }
+        }
         wallpaper.setOnTouchListener { _, event -> gestureDetector.onTouchEvent(event); true }
         wallpaper.start()
         rotateCaption(0)
 
         setupPanel()
         handler.postDelayed({ fadeOut(hint) }, 9000)
+
+        // #12 启动遮罩：字标淡入 + 兜底撤除（防止首图解码失败时永久遮挡）
+        splashLogo.animate().alpha(1f).setDuration(380).start()
+        handler.postDelayed({ dismissSplash() }, 2600)
     }
 
     // ── 初始化 ─────────────────────────────────────────────
@@ -144,6 +162,8 @@ class MainActivity : Activity() {
         volOsd = findViewById(R.id.vol_osd)
         panelWrap = findViewById(R.id.panel_wrap)
         trackList = findViewById(R.id.track_list)
+        splash = findViewById(R.id.splash)
+        splashLogo = findViewById(R.id.splash_logo)
     }
 
     private fun applyFonts() {
@@ -219,6 +239,15 @@ class MainActivity : Activity() {
 
     private fun fadeOut(view: View) {
         view.animate().alpha(0f).setDuration(900).start()
+    }
+
+    /** #12 启动遮罩淡出：字标随遮罩一起退场，露出壁纸场景 */
+    private fun dismissSplash() {
+        if (splashDismissed) return
+        splashDismissed = true
+        splash.animate().alpha(0f).setDuration(650).withEndAction {
+            splash.visibility = View.GONE
+        }.start()
     }
 
     // ── 时钟 ───────────────────────────────────────────────

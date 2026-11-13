@@ -303,7 +303,18 @@ def make_tv_banner():
     im.convert("RGB").save(os.path.join(RES, "drawable", "tv_banner.png"))
     print("  -> drawable/tv_banner.png")
 
+def make_splash_logo():
+    """启动遮罩字标：透明底的 lofi 暖金光晕字（splash 淡入淡出用）"""
+    W, H = 1024, 320
+    im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    im = glow_wordmark(im, "lofi", W * 0.5, H * 0.5 - 4, W * 0.62, 22)
+    out = os.path.join(RES, "drawable", "splash_logo.png")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    im.save(out)
+    print("  -> drawable/splash_logo.png")
+
 print("== 生成图标与 banner ==")
 make_icon()
 make_tv_banner()
+make_splash_logo()
 print("done.")

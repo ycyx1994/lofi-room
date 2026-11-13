@@ -218,4 +218,21 @@
         android:visibility="gone"
         tools:text="VOL 80%" />
 
+    <!-- 启动遮罩：lofi 字标淡入，首图就绪后整层淡出 -->
+    <FrameLayout
+        android:id="@+id/splash"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/slate">
+
+        <ImageView
+            android:id="@+id/splash_logo"
+            android:layout_width="300dp"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:alpha="0"
+            android:contentDescription="@string/app_name"
+            android:src="@drawable/splash_logo" />
+    </FrameLayout>
+
 </FrameLayout>
