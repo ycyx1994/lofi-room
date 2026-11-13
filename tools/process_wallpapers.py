@@ -214,83 +214,93 @@ warm_abstract(21, [(28, 22, 20), (170, 92, 48), (235, 205, 168), (74, 40, 26), (
 warm_abstract(42, [(32, 30, 22), (140, 118, 74), (238, 226, 196), (72, 62, 38), (196, 158, 102), (42, 38, 26)], "wall_09.jpg")
 
 # ---------------------------------------------------------------- 图标 & TV banner
-def find_font(candidates):
-    for p in candidates:
-        if os.path.exists(p):
-            return p
-    return None
+# 品牌字标「lofi」：DM Serif Display 小写 + 暖金光晕 + 深蓝黑圆角块（用户提供参考样式）
+FONT_DIR = os.path.join(ROOT, "app/src/main/assets/fonts")
+LOGO_FONT = os.path.join(ROOT, "tools/fonts/DMSerifDisplay-Regular.ttf")
+SANS = os.path.join(FONT_DIR, "Jost.ttf")                # 与应用内标签同款
 
-SERIF = find_font([
-    "/System/Library/Fonts/Supplemental/Georgia Bold.ttf",
-    "/System/Library/Fonts/Supplemental/Georgia.ttf",
-    "/System/Library/Fonts/Times.ttc",
-    "/System/Library/Fonts/Supplemental/Times New Roman.ttf",
-])
-SANS = find_font([
-    "/System/Library/Fonts/HelveticaNeue.ttc",
-    "/System/Library/Fonts/Helvetica.ttc",
-    "/System/Library/Fonts/Supplemental/Arial.ttf",
-])
-print("fonts:", SERIF, "|", SANS)
+TILE_DARK = (13.0, 19.0, 27.0)   # 深蓝黑块面
+GOLD = (238, 190, 130)           # 光晕金
+GOLD_HI = (247, 210, 163)        # 字面亮金
 
-def warm_bg(W, H, seed=3):
+def film_grain(img, sigma, seed):
     rng = np.random.default_rng(seed)
-    yy, xx = np.mgrid[0:H, 0:W]
-    img = np.zeros((H, W, 3))
-    base = np.array([26, 17, 12], float)
-    glow = np.array([196, 122, 62], float)
-    cx, cy = W * 0.5, H * 1.02
-    d = np.sqrt(((xx - cx) / (W * 0.75)) ** 2 + ((yy - cy) / (H * 0.95)) ** 2)
-    w = np.exp(-(d ** 2) * 2.2)
-    img = base + w[:, :, None] * glow
-    img += rng.normal(0, 2.0, (H, W, 1))
-    return np.clip(img, 0, 255).astype(np.uint8)
+    return np.clip(img + rng.normal(0, sigma, img.shape[:2] + (1,)), 0, 255)
+
+def glow_wordmark(im, text, cx, cy, width, blur, track=0.055):
+    """小写暖金字标 + 双层光晕；track 为字距（字号的比例），逐字排布避免 f/i 相贴"""
+    f0 = ImageFont.truetype(LOGO_FONT, 100)
+    nat = sum(f0.getlength(c) for c in text)
+    size = max(8, int(100 * width / (nat + 100 * track * (len(text) - 1))))
+    f = ImageFont.truetype(LOGO_FONT, size)
+    gap = size * track
+    total = sum(f.getlength(c) for c in text) + gap * (len(text) - 1)
+
+    def stamp(fill):
+        layer = Image.new("RGBA", im.size, (0, 0, 0, 0))
+        d = ImageDraw.Draw(layer)
+        x = cx - total / 2
+        for c in text:
+            d.text((x, cy), c, font=f, fill=fill, anchor="lm")
+            x += f.getlength(c) + gap
+        return layer
+
+    for _ in range(2):
+        im = Image.alpha_composite(im, stamp(GOLD + (255,)).filter(ImageFilter.GaussianBlur(blur)))
+    return Image.alpha_composite(im, stamp(GOLD_HI + (255,)))
+
+def rounded_tile(img, radius):
+    mask = Image.new("L", img.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, img.size[0]-1, img.size[1]-1], radius=radius, fill=255)
+    out = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    out.paste(img, (0, 0), mask)
+    return out
 
 def make_icon():
-    S = 512
-    im = Image.fromarray(warm_bg(S, S))
-    d = ImageDraw.Draw(im)
-    # 品牌图形：弯月 + 三根音柱
-    cx, cy, r = S * 0.5, S * 0.42, S * 0.235
-    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(245, 231, 208))
-    d.ellipse([cx - r * 0.72 - r * 0.42, cy - r * 0.92, cx + r * 0.86, cy + r * 1.02],
-              fill=(30, 20, 14))
-    # 音柱
-    base_y = S * 0.82
-    for i, (dx, h) in enumerate([(-0.13, 0.10), (0.0, 0.16), (0.13, 0.12)]):
-        x = S * (0.5 + dx)
-        w = S * 0.022
-        hh = S * h
-        d.rounded_rectangle([x - w, base_y - hh, x + w, base_y + hh * 0.35],
-                            radius=w, fill=(245, 231, 208))
-    for dpi, folder in [(72, "mipmap-mdpi"), (108, "mipmap-hdpi"), (144, "mipmap-xhdpi"),
-                        (216, "mipmap-xxhdpi"), (288, "mipmap-xxxhdpi")]:
+    """「lofi」字标图标：深蓝黑圆角块 + 小写暖金字标 + 光晕 + 颗粒"""
+    S = 1024
+    yy, xx = np.mgrid[0:S, 0:S]
+    y = yy / S
+    img = np.zeros((S, S, 3), dtype=np.float64)
+    img[:] = TILE_DARK
+    img += y[..., None] * np.array([5.0, 5.0, 7.0])                       # 下部微亮
+    img += np.clip(1 - y * 3.2, 0, 1)[..., None] * np.array([8.0, 8.0, 10.0])  # 顶部微光
+    im = Image.fromarray(film_grain(img, 2.0, 11).astype(np.uint8)).convert("RGBA")
+    im = glow_wordmark(im, "lofi", S * 0.5, S * 0.5 - 8, S * 0.66, 26)
+    im = rounded_tile(im, int(S * 0.22))
+    for dpi, folder in [(48, "mipmap-mdpi"), (72, "mipmap-hdpi"), (96, "mipmap-xhdpi"),
+                        (144, "mipmap-xxhdpi"), (192, "mipmap-xxxhdpi")]:
         outdir = os.path.join(RES, folder)
         os.makedirs(outdir, exist_ok=True)
         im.resize((dpi, dpi), Image.LANCZOS).save(os.path.join(outdir, "ic_launcher.png"))
-    print("  -> ic_launcher.png (mdpi..xxxhdpi)")
+    print("  -> ic_launcher.png (48/72/96/144/192)")
 
 def make_tv_banner():
+    """TV banner：lofi room 小写字标 + 标语，同一套光晕语言"""
     W, H = 640, 360  # 320x180 dp @2x
-    im = Image.fromarray(warm_bg(W, H, seed=9))
+    yy, xx = np.mgrid[0:H, 0:W]
+    x, y = xx / W, yy / H
+    img = np.zeros((H, W, 3), dtype=np.float64)
+    img[:] = TILE_DARK
+    img += y[..., None] * np.array([7.0, 7.0, 9.0])
+    pool = np.exp(-(((x - 0.5) / 0.75) ** 2 + ((y - 1.05) / 0.5) ** 2))
+    img += pool[..., None] * np.array([30.0, 24.0, 18.0])     # 底部微光（克制）
+    im = Image.fromarray(film_grain(img, 1.8, 23).astype(np.uint8)).convert("RGBA")
+    im = glow_wordmark(im, "lofi room", W * 0.5, H * 0.42, 400, 11)
     d = ImageDraw.Draw(im)
-    f1 = ImageFont.truetype(SERIF, 54) if SERIF else ImageFont.load_default()
-    f2 = ImageFont.truetype(SANS, 20) if SANS else ImageFont.load_default()
-    title = "LOFI ROOM"
-    # 手工字母间距
+    f2 = ImageFont.truetype(SANS, 15)
+
     def tracked_text(d, xy, text, font, fill, spacing):
-        x, y = xy
+        x0, y0 = xy
         for ch in text:
-            d.text((x, y), ch, font=font, fill=fill)
-            x += d.textlength(ch, font=font) + spacing
-        return x
-    w = sum(d.textlength(ch, font=f1) + 8 for ch in title)
-    tracked_text(d, ((W - w) / 2, H * 0.30), title, f1, (245, 231, 208), 8)
-    sub = "MUSIC  ·  WALLPAPER  ·  CALM"
-    w2 = sum(d.textlength(ch, font=f2) + 4 for ch in sub)
-    tracked_text(d, ((W - w2) / 2, H * 0.60), sub, f2, (226, 183, 140), 4)
+            d.text((x0, y0), ch, font=font, fill=fill)
+            x0 += d.textlength(ch, font=font) + spacing
+
+    sub = "MUSIC · WALLPAPER · CALM"
+    w2 = sum(d.textlength(ch, font=f2) + 5 for ch in sub)
+    tracked_text(d, ((W - w2) / 2, 252), sub, f2, (216, 181, 126), 5)
     os.makedirs(os.path.join(RES, "drawable"), exist_ok=True)
-    im.save(os.path.join(RES, "drawable", "tv_banner.png"))
+    im.convert("RGB").save(os.path.join(RES, "drawable", "tv_banner.png"))
     print("  -> drawable/tv_banner.png")
 
 print("== 生成图标与 banner ==")
