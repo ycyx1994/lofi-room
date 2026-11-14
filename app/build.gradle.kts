@@ -1,11 +1,12 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
     namespace = "com.lofiroom.tv"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.lofiroom.tv"
@@ -34,8 +35,22 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    buildFeatures {
+        compose = true // #compose-tv-migration P0
+    }
 }
 
 dependencies {
     implementation("androidx.media3:media3-exoplayer:1.4.1")
+
+    // #compose-tv-migration P0 Compose for TV 工具链。
+    // 版本组合守住 minSdk 21：androidx 2025 年中之后的产物普遍抬到 minSdk 23，
+    // 故取 Compose 1.8.1（BOM 2025.05.00，minSdk 21）+ tv-material 1.0.1（minSdk 21，要求 Compose ≥1.6.8）
+    val composeBom = platform("androidx.compose:compose-bom:2025.05.00")
+    implementation(composeBom)
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.tv:tv-material:1.0.1")
+    debugImplementation("androidx.compose.ui:ui-tooling")
 }
