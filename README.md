@@ -42,7 +42,7 @@
   | OK / 播放暂停 | 播放 / 暂停 |
   | ← / → | 上一首 / 下一首 |
   | ↑ / ↓ | 音量 +5% / −5%（屏幕中央 OSD 提示） |
-  | MENU / 设置 / INFO | 面板（曲目页 ↑↓ 选曲、←→ 切页签；背景页 ↑↓←→ 选图、端点切页签，OK 应用） |
+  | MENU / 设置 / INFO | 面板（↑↓←→ 选择，↑↓ 到页签换页，OK 应用） |
   | BACK | 收起提示 / 关闭面板（不退出，保持氛围） |
 
   触摸手势（手机 / 平板 / 带触屏电视）：
@@ -80,6 +80,7 @@ app/src/main/
 │   │   ├── AudioEngine.kt         # ExoPlayer + TeeAudioProcessor 音频引擎
 │   │   └── VisualizerTap.kt       # PCM 采集 + Goertzel 频带分析
 │   ├── ui/
+│   │   ├── PanelCompose.kt        # 播放列表面板（Compose for TV：页签/曲目/背景宫格）
 │   │   ├── WallpaperView.kt       # 壁纸轮播（缓动溶解 + Ken Burns）
 │   │   └── VisualizerView.kt      # 音频波形条绘制
 │   └── data/Playlist.kt           # 曲目、壁纸与文案数据
@@ -110,3 +111,5 @@ app/src/main/
 - 字体：Cormorant Garamond（衬线标题）+ Jost（几何无衬线标签），随包加载；
   品牌字标为 DM Serif Display 小写 `lofi` 暖金光晕（OFL）
 - Media3 ExoPlayer 1.4.1，minSdk 21，leanback launcher 适配
+- 播放列表面板用 Compose for TV（`androidx.tv:tv-material` 1.0.1 + Compose 1.8.1）：
+  遥控/触摸交互走 Compose 焦点系统，视觉沿用手绘时代设计语言；版本组合守住 minSdk 21

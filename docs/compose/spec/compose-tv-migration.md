@@ -1,11 +1,31 @@
 ---
 feature: compose-tv-migration
-status: planned
+status: delivered
 updated: 2026-11-14
 source: https://github.com/ycyx1994/lofi-room
 ---
 
 # Compose for TV 重构计划
+
+## Report
+
+**What was built** — P0 工具链升级（AGP 8.9.3 / Gradle 8.11.1 / Kotlin 2.1.20 / compileSdk 36，
+targetSdk 不变）+ 面板整体迁移到 Compose：`PanelCompose.kt`（页签 / 曲目列表 / 背景宫格 /
+自动切换开关 / 提示行），遥控与触摸交互走 Compose 焦点系统，Activity 侧删除全部手写
+导航机器（panelKey/panelCursor/自绘光标 adapters）。旧布局与光标 drawables 已清除。
+
+**Verification** — Android TV 模拟器（API 34 android-tv arm64）全量交互回归：
+焦点开面板落页签、↑↓←→ 二维导航（保列换行/行内移动）、↑↓ 穿行页签换页、
+曲目 OK 播放并收起（02/03 精确验证）、背景 OK 应用且金框跟随、触摸点按应用且面板保持、
+点卡片空白不误关、BACK 关面板。`assembleDebug`/`assembleRelease` 双通过。
+
+**Deviations from plan** — ① 版本组合守 minSdk 21 而非计划的 tv-material 1.1.0：
+androidx 2025 年中后产物普遍要求 minSdk 23，故取 Compose 1.8.1（BOM 2025.05.00）+
+tv-material 1.0.1。② 组件映射中 Card/ListItem/Switch/TabRow 实际落地为
+「Compose 焦点系统 + 自定义视觉壳」——交互层（焦点移动、按键、触摸）是官方的，
+视觉壳用于精确复刻 v1.3 设计语言（tv-material 1.0.1 的样式定制面不足以还原）；
+开关沿用整格 ON/OFF 文案。③ 「行端 ←→ 切页签」简化为「↑↓ 穿行页签、←→ 在页签行换页」
+（官方 TV 惯例，焦点系统天然支持）。
 
 ## [S1] Problem
 
