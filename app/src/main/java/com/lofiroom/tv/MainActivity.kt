@@ -16,6 +16,7 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import android.widget.AbsListView
 import android.widget.AdapterView
 import android.widget.BaseAdapter
 import android.widget.FrameLayout
@@ -71,6 +72,7 @@ class MainActivity : Activity() {
 
     private enum class PanelMode { TRACKS, BACKGROUNDS } // #14 面板双页签
     private var panelMode = PanelMode.TRACKS
+    private var panelCursor = 0 // #20 面板光标行/格（GridView listSelector 在部分机型不绘制，改由 adapter 画）
     private val prefs by lazy { getSharedPreferences("lofi_prefs", MODE_PRIVATE) }
 
     private var captionIndex = 0
@@ -143,7 +145,7 @@ class MainActivity : Activity() {
         wallpaper.startIndex = prefs.getInt("wallpaper_index", 0)
         wallpaper.onWallpaperChange = { index, _ ->
             rotateCaption(index)
-            if (panelWrap.visibility == View.VISIBLE) trackList.invalidateViews()
+            if (panelWrap.visibility == View.VISIBLE) wallGrid.invalidateViews() // #21 刷新"已应用"金框
             if (!firstWallReady) { // #12 首图就绪：满足最短展示时长后撤遮罩
                 firstWallReady = true
                 val wait = (1100 - (System.currentTimeMillis() - bootAtMs)).coerceAtLeast(0)
@@ -299,10 +301,10 @@ class MainActivity : Activity() {
         wallGrid.onItemClickListener = click
         // #15 页签点击：触摸端切换页签（遥控器仍可用 ←→）
         tabTracks.setOnClickListener {
-            panelMode = PanelMode.TRACKS; applyPanelMode(); activeList().setSelection(0)
+            panelMode = PanelMode.TRACKS; applyPanelMode(); movePanelCursor(0)
         }
         tabBackgrounds.setOnClickListener {
-            panelMode = PanelMode.BACKGROUNDS; applyPanelMode(); activeList().setSelection(0)
+            panelMode = PanelMode.BACKGROUNDS; applyPanelMode(); movePanelCursor(0)
         }
         // #11 点面板外暗色区域关闭（卡片本体 clickable 消费，点卡片不关闭）
         panelWrap.setOnClickListener { togglePanel() }
@@ -311,8 +313,15 @@ class MainActivity : Activity() {
     }
 
     /** 当前页签的选择列表（曲目 ListView / 背景宫格） */
-    private fun activeList(): AdapterView<*> =
+    private fun activeList(): AbsListView =
         if (panelMode == PanelMode.TRACKS) trackList else wallGrid
+
+    /** #20 移动面板光标：同步 AdapterView 选中态并重绑视图以绘制光标 */
+    private fun movePanelCursor(pos: Int) {
+        panelCursor = pos.coerceIn(0, panelCount() - 1)
+        activeList().setSelection(panelCursor)
+        activeList().invalidateViews()
+    }
 
     /** #14 面板当前页签的行数 */
     private fun panelCount(): Int =
@@ -362,7 +371,7 @@ class MainActivity : Activity() {
             panelWrap.visibility = View.GONE
         } else {
             panelWrap.visibility = View.VISIBLE
-            activeList().setSelection(
+            movePanelCursor(
                 if (panelMode == PanelMode.TRACKS) engine.currentIndex
                 else (wallpaper.currentIndex + 1).coerceAtMost(panelCount() - 1)
             )
@@ -410,6 +419,9 @@ class MainActivity : Activity() {
             val title = v.findViewById<TextView>(R.id.row_title)
             val sub = v.findViewById<TextView>(R.id.row_sub)
             val state = v.findViewById<TextView>(R.id.row_state)
+            // #20 光标由行背景绘制（不依赖 listSelector）
+            if (position == panelCursor) v.setBackgroundResource(R.drawable.row_cursor)
+            else v.background = null
             no.text = String.format(Locale.ENGLISH, "%02d", position + 1)
             title.text = t.title
             sub.text = t.sub
@@ -442,15 +454,20 @@ class MainActivity : Activity() {
                 toggleState.text = if (on) "ON" else "OFF"
                 @Suppress("DEPRECATION")
                 toggleState.setTextColor(resources.getColor(if (on) R.color.gold else R.color.cream_dim))
-                v.setBackgroundResource(R.drawable.panel_bg)
+                // #20 光标 > 普通格背景
+                v.setBackgroundResource(if (position == panelCursor) R.drawable.cell_cursor else R.drawable.panel_bg)
             } else {
                 toggle.visibility = View.GONE
                 thumb.visibility = View.VISIBLE
                 val i = position - 1
                 thumb.setImageBitmap(wallpaper.nameAt(i)?.let { thumbCache[it] })
+                // #20 光标 > 已应用 > 普通
                 v.setBackgroundResource(
-                    if (i == wallpaper.currentIndex) R.drawable.thumb_bg_selected
-                    else R.drawable.panel_bg
+                    when {
+                        position == panelCursor -> R.drawable.cell_cursor
+                        i == wallpaper.currentIndex -> R.drawable.thumb_bg_selected
+                        else -> R.drawable.panel_bg
+                    }
                 )
             }
             toggleLabel.typeface = fontSans
@@ -462,8 +479,17 @@ class MainActivity : Activity() {
 
     // ── 遥控器 / 按键交互 ────────────────────────────────────
 
+    /** #21 焦点停在可点击面板元素上时 View.onKeyDown 会吞掉单击确认键（仅长按 repeat 漏下），
+     *  故面板打开时先于焦点链拦截按键 */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (panelWrap.visibility == View.VISIBLE && event.action == KeyEvent.ACTION_DOWN &&
+            panelKey(event.keyCode, event.repeatCount)
+        ) return true
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (panelWrap.visibility == View.VISIBLE) return panelKey(keyCode)
+        if (panelWrap.visibility == View.VISIBLE) return panelKey(keyCode, event?.repeatCount ?: 0)
         return when (keyCode) {
             KeyEvent.KEYCODE_DPAD_CENTER,
             KeyEvent.KEYCODE_ENTER,
@@ -513,41 +539,64 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun panelKey(keyCode: Int): Boolean = when (keyCode) {
-        // #14 ←→ 在「曲目 / 背景」页签间切换
-        KeyEvent.KEYCODE_DPAD_LEFT,
-        KeyEvent.KEYCODE_DPAD_RIGHT -> {
-            panelMode =
-                if (panelMode == PanelMode.TRACKS) PanelMode.BACKGROUNDS else PanelMode.TRACKS
-            applyPanelMode()
-            activeList().setSelection(0); true
-        }
+    private fun panelKey(keyCode: Int, repeatCount: Int = 0): Boolean {
+        val cols = wallGrid.numColumns
+        val pos = panelCursor
+        return when (keyCode) {
+            // #20 背景宫格二维导航：←→ 行内移动，行端越界才切页签（曲目页 ←→ 直接切）
+            KeyEvent.KEYCODE_DPAD_LEFT -> {
+                if (panelMode == PanelMode.BACKGROUNDS && pos % cols != 0) {
+                    movePanelCursor(pos - 1)
+                } else {
+                    switchPanelTab()
+                }
+                true
+            }
 
-        KeyEvent.KEYCODE_DPAD_UP -> {
-            val p = (activeList().selectedItemPosition - 1)
-                .coerceAtLeast(0)
-            activeList().setSelection(p); true
-        }
+            KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                val atRowEnd = pos % cols == cols - 1 || pos == panelCount() - 1
+                if (panelMode == PanelMode.BACKGROUNDS && !atRowEnd) {
+                    movePanelCursor(pos + 1)
+                } else {
+                    switchPanelTab()
+                }
+                true
+            }
 
-        KeyEvent.KEYCODE_DPAD_DOWN -> {
-            val p = (activeList().selectedItemPosition + 1)
-                .coerceAtMost(panelCount() - 1)
-            activeList().setSelection(p); true
-        }
+            KeyEvent.KEYCODE_DPAD_UP -> {
+                val step = if (panelMode == PanelMode.BACKGROUNDS) cols else 1
+                movePanelCursor(pos - step); true
+            }
 
-        KeyEvent.KEYCODE_DPAD_CENTER,
-        KeyEvent.KEYCODE_ENTER,
-        KeyEvent.KEYCODE_NUMPAD_ENTER -> {
-            panelActivate(activeList().selectedItemPosition); true
-        }
+            KeyEvent.KEYCODE_DPAD_DOWN -> {
+                val step = if (panelMode == PanelMode.BACKGROUNDS) cols else 1
+                movePanelCursor(pos + step); true
+            }
 
-        KeyEvent.KEYCODE_BACK,
-        KeyEvent.KEYCODE_MENU,
-        KeyEvent.KEYCODE_SETTINGS -> {
-            togglePanel(); true
-        }
+            KeyEvent.KEYCODE_DPAD_CENTER,
+            KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_NUMPAD_ENTER,
+            KeyEvent.KEYCODE_SPACE -> {
+                if (repeatCount == 0) panelActivate(panelCursor) // #21 长按 repeat 只消费不重发
+                true
+            }
 
-        else -> false
+            KeyEvent.KEYCODE_BACK,
+            KeyEvent.KEYCODE_MENU,
+            KeyEvent.KEYCODE_SETTINGS -> {
+                togglePanel(); true
+            }
+
+            else -> false
+        }
+    }
+
+    /** #14/#20 在「曲目 / 背景」页签间切换 */
+    private fun switchPanelTab() {
+        panelMode =
+            if (panelMode == PanelMode.TRACKS) PanelMode.BACKGROUNDS else PanelMode.TRACKS
+        applyPanelMode()
+        movePanelCursor(0)
     }
 
     private fun changeVolume(delta: Float) {

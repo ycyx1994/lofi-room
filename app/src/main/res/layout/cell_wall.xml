@@ -3,15 +3,18 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="92dp"
-    android:background="@drawable/panel_bg">
+    android:background="@drawable/panel_bg"
+    android:clipToOutline="true">
 
     <ImageView
         android:id="@+id/cell_thumb"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:layout_margin="2dp"
+        android:background="@drawable/thumb_clip"
+        android:clipToOutline="true"
         android:contentDescription="@string/app_name"
-        android:scaleType="fitCenter" />
+        android:scaleType="centerCrop" />
 
     <!-- 自动切换开关格（与缩略图共用单元布局） -->
     <LinearLayout

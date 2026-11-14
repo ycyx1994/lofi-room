@@ -145,7 +145,6 @@
         android:layout_height="match_parent"
         android:background="#66000000"
         android:clickable="true"
-        android:focusable="true"
         android:visibility="gone">
 
         <LinearLayout
@@ -172,7 +171,6 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:clickable="true"
-                    android:focusable="true"
                     android:letterSpacing="0.4"
                     android:paddingEnd="22dp"
                     android:text="@string/panel_title"
@@ -184,7 +182,6 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:clickable="true"
-                    android:focusable="true"
                     android:letterSpacing="0.4"
                     android:text="@string/panel_title_bg"
                     android:textColor="@color/cream_dim"
@@ -199,13 +196,15 @@
                 android:layout_marginTop="16dp"
                 android:divider="#1AF6F0E6"
                 android:dividerHeight="1dp"
-                android:listSelector="#14D8B57E" />
+                android:focusable="false"
+                android:listSelector="#00000000" />
 
             <GridView
                 android:id="@+id/wall_grid"
                 android:layout_width="match_parent"
                 android:layout_height="192dp"
                 android:layout_marginTop="16dp"
+                android:focusable="false"
                 android:horizontalSpacing="8dp"
                 android:listSelector="#00000000"
                 android:numColumns="4"
