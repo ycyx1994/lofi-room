@@ -1,7 +1,6 @@
 package com.lofiroom.tv
 
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Typeface
@@ -16,20 +15,23 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
-import android.widget.AbsListView
-import android.widget.AdapterView
-import android.widget.BaseAdapter
 import android.widget.FrameLayout
-import android.widget.GridView
 import android.widget.ImageView
-import android.widget.ListView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.platform.ComposeView
 import com.lofiroom.tv.audio.AudioEngine
 import com.lofiroom.tv.audio.VisualizerTap
 import com.lofiroom.tv.data.Caption
 import com.lofiroom.tv.data.Playlist
 import com.lofiroom.tv.data.Track
+import com.lofiroom.tv.ui.LofiPanel
+import com.lofiroom.tv.ui.PanelTab
 import com.lofiroom.tv.ui.VisualizerView
 import com.lofiroom.tv.ui.WallpaperView
 import java.text.SimpleDateFormat
@@ -37,7 +39,7 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 
-class MainActivity : Activity() {
+class MainActivity : ComponentActivity() {
 
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var tap: VisualizerTap
@@ -56,13 +58,18 @@ class MainActivity : Activity() {
     private lateinit var hint: TextView
     private lateinit var volOsd: TextView
     private lateinit var panelWrap: FrameLayout
-    private lateinit var trackList: ListView
-    private lateinit var wallGrid: GridView
-    private lateinit var tabTracks: TextView
-    private lateinit var tabBackgrounds: TextView
-    private lateinit var panelHint: TextView
+    private lateinit var panelCompose: ComposeView
 
-    private val thumbCache = java.util.concurrent.ConcurrentHashMap<String, Bitmap>()
+    // #compose-tv-migration 面板状态桥（Activity 持有 → Compose 重组）
+    private val panelTabState = mutableStateOf(PanelTab.TRACKS)
+    private val playingIndexState = mutableIntStateOf(0)
+    private val playingState = mutableStateOf(true)
+    private val appliedWallState = mutableIntStateOf(0)
+    private val autoRotateState = mutableStateOf(false)
+    private val thumbs = mutableStateMapOf<String, Bitmap>()
+    private val tabsFocus = FocusRequester()
+    private val panelOpenTick = mutableIntStateOf(0)
+
     private lateinit var splash: FrameLayout
     private lateinit var splashLogo: ImageView
 
@@ -70,9 +77,6 @@ class MainActivity : Activity() {
     private var splashDismissed = false
     private val bootAtMs = System.currentTimeMillis()
 
-    private enum class PanelMode { TRACKS, BACKGROUNDS } // #14 面板双页签
-    private var panelMode = PanelMode.TRACKS
-    private var panelCursor = 0 // #20 面板光标行/格（GridView listSelector 在部分机型不绘制，改由 adapter 画）
     private val prefs by lazy { getSharedPreferences("lofi_prefs", MODE_PRIVATE) }
 
     private var captionIndex = 0
@@ -130,12 +134,12 @@ class MainActivity : Activity() {
             override fun onTrackChanged(track: Track, index: Int, total: Int) {
                 totalTracks = total
                 bindTrack(track, index, total)
-                if (panelWrap.visibility == View.VISIBLE) trackList.invalidateViews()
+                playingIndexState.intValue = index
             }
 
             override fun onPlayingChanged(playing: Boolean) {
                 // 静音时 VisualizerView 自行衰减
-                if (panelWrap.visibility == View.VISIBLE) trackList.invalidateViews()
+                playingState.value = playing
             }
         }
         bindTrack(Playlist.tracks[0], 0, totalTracks)
@@ -143,9 +147,10 @@ class MainActivity : Activity() {
         // #14 记忆自动切换开关（默认关）与选中的壁纸（默认城市夜景）
         wallpaper.autoRotate = prefs.getBoolean("auto_rotate", false)
         wallpaper.startIndex = prefs.getInt("wallpaper_index", 0)
+        autoRotateState.value = wallpaper.autoRotate
         wallpaper.onWallpaperChange = { index, _ ->
             rotateCaption(index)
-            if (panelWrap.visibility == View.VISIBLE) wallGrid.invalidateViews() // #21 刷新"已应用"金框
+            appliedWallState.intValue = index // #compose-tv-migration 刷新"已应用"金框
             if (!firstWallReady) { // #12 首图就绪：满足最短展示时长后撤遮罩
                 firstWallReady = true
                 val wait = (1100 - (System.currentTimeMillis() - bootAtMs)).coerceAtLeast(0)
@@ -180,11 +185,9 @@ class MainActivity : Activity() {
         hint = findViewById(R.id.hint)
         volOsd = findViewById(R.id.vol_osd)
         panelWrap = findViewById(R.id.panel_wrap)
-        trackList = findViewById(R.id.track_list)
-        wallGrid = findViewById(R.id.wall_grid)
-        tabTracks = findViewById(R.id.tab_tracks)
-        tabBackgrounds = findViewById(R.id.tab_backgrounds)
-        panelHint = findViewById(R.id.panel_hint)
+        panelWrap.isFocusable = false // 焦点只属于 Compose 面板内部
+        panelWrap.isFocusableInTouchMode = false
+        panelCompose = findViewById(R.id.panel_compose)
         splash = findViewById(R.id.splash)
         splashLogo = findViewById(R.id.splash_logo)
     }
@@ -288,82 +291,40 @@ class MainActivity : Activity() {
         tick.run()
     }
 
-    // ── 播放列表面板 ────────────────────────────────────────
+    // ── 播放列表面板（Compose）────────────────────────────────
 
     private fun setupPanel() {
-        trackList.adapter = TrackAdapter()
-        trackList.choiceMode = ListView.CHOICE_MODE_SINGLE
-        wallGrid.adapter = WallGridAdapter()
-        wallGrid.numColumns = 4
-        // #17 触摸点按：曲目页=播放并收起；背景页=换图/开关（面板保持打开）
-        val click = AdapterView.OnItemClickListener { _, _, position, _ -> panelActivate(position) }
-        trackList.onItemClickListener = click
-        wallGrid.onItemClickListener = click
-        // #15 页签点击：触摸端切换页签（遥控器仍可用 ←→）
-        tabTracks.setOnClickListener {
-            panelMode = PanelMode.TRACKS; applyPanelMode(); movePanelCursor(0)
-        }
-        tabBackgrounds.setOnClickListener {
-            panelMode = PanelMode.BACKGROUNDS; applyPanelMode(); movePanelCursor(0)
-        }
-        // #11 点面板外暗色区域关闭（卡片本体 clickable 消费，点卡片不关闭）
-        panelWrap.setOnClickListener { togglePanel() }
-        applyPanelMode()
-        warmThumbs()
-    }
-
-    /** 当前页签的选择列表（曲目 ListView / 背景宫格） */
-    private fun activeList(): AbsListView =
-        if (panelMode == PanelMode.TRACKS) trackList else wallGrid
-
-    /** #20 移动面板光标：同步 AdapterView 选中态并重绑视图以绘制光标 */
-    private fun movePanelCursor(pos: Int) {
-        panelCursor = pos.coerceIn(0, panelCount() - 1)
-        activeList().setSelection(panelCursor)
-        activeList().invalidateViews()
-    }
-
-    /** #14 面板当前页签的行数 */
-    private fun panelCount(): Int =
-        if (panelMode == PanelMode.TRACKS) Playlist.tracks.size else 1 + wallpaper.count
-
-    /** #14 OK / 点按 的页签分发 */
-    private fun panelActivate(position: Int) {
-        when (panelMode) {
-            PanelMode.TRACKS -> {
-                if (position in Playlist.tracks.indices) engine.playIndex(position)
-                trackList.invalidateViews()
-                togglePanel()
-            }
-
-            PanelMode.BACKGROUNDS -> {
-                if (position == 0) {
-                    wallpaper.autoRotate = !wallpaper.autoRotate
-                    prefs.edit().putBoolean("auto_rotate", wallpaper.autoRotate).apply()
-                } else {
-                    val i = position - 1
+        panelCompose.setContent {
+            LofiPanel(
+                tab = panelTabState.value,
+                onTabChange = { panelTabState.value = it },
+                playingIndex = playingIndexState.intValue,
+                playing = playingState.value,
+                onTrackClick = { i ->
+                    engine.playIndex(i)
+                    togglePanel()
+                },
+                wallCount = wallpaper.count,
+                thumbOf = { i -> wallpaper.nameAt(i)?.let { thumbs[it] } },
+                appliedIndex = appliedWallState.intValue,
+                onWallClick = { i ->
                     if (i in 0 until wallpaper.count) {
                         wallpaper.show(i)
                         prefs.edit().putInt("wallpaper_index", i).apply()
                     }
-                }
-                wallGrid.invalidateViews() // 设置页不收起，方便连续试
-            }
+                },
+                autoRotate = autoRotateState.value,
+                onAutoRotateToggle = {
+                    wallpaper.autoRotate = !wallpaper.autoRotate
+                    autoRotateState.value = wallpaper.autoRotate
+                    prefs.edit().putBoolean("auto_rotate", wallpaper.autoRotate).apply()
+                },
+                tabsFocus = tabsFocus,
+                openTick = panelOpenTick.intValue,
+            )
         }
-    }
-
-    private fun applyPanelMode() {
-        val bg = panelMode == PanelMode.BACKGROUNDS
-        // #15 页签高亮：当前页金色，另一页弱化（resources.getColor 兼容 minSdk 21）
-        @Suppress("DEPRECATION")
-        tabTracks.setTextColor(resources.getColor(if (bg) R.color.cream_dim else R.color.gold))
-        @Suppress("DEPRECATION")
-        tabBackgrounds.setTextColor(resources.getColor(if (bg) R.color.gold else R.color.cream_dim))
-        panelHint.setText(if (bg) R.string.panel_hint_bg else R.string.panel_hint)
-        // #17 固定面板尺寸：两页共用同一高度，只切可见性
-        trackList.visibility = if (bg) View.GONE else View.VISIBLE
-        wallGrid.visibility = if (bg) View.VISIBLE else View.GONE
-        (if (bg) wallGrid else trackList).invalidateViews()
+        panelWrap.setOnClickListener { togglePanel() }
+        warmThumbs()
     }
 
     private fun togglePanel() {
@@ -371,10 +332,14 @@ class MainActivity : Activity() {
             panelWrap.visibility = View.GONE
         } else {
             panelWrap.visibility = View.VISIBLE
-            movePanelCursor(
-                if (panelMode == PanelMode.TRACKS) engine.currentIndex
-                else (wallpaper.currentIndex + 1).coerceAtMost(panelCount() - 1)
-            )
+            panelOpenTick.intValue++ // Compose 侧 LaunchedEffect 先请求一次页签焦点
+            // 布局完成后再抢一次：visibility 变化后的默认焦点分配可能把焦点落到 panel_wrap
+            panelCompose.post {
+                runCatching {
+                    panelCompose.requestFocus()
+                    tabsFocus.requestFocus()
+                }
+            }
             hint.alpha = 1f
             fadeOut(hint)
         }
@@ -393,7 +358,7 @@ class MainActivity : Activity() {
         null
     }
 
-    /** #17 预热缩略图缓存（后台解码，完成刷新宫格） */
+    /** #17 预热缩略图缓存（后台解码，完成回填 Compose 状态） */
     private fun warmThumbs() {
         val names = (0 until wallpaper.count).mapNotNull { wallpaper.nameAt(it) }
         if (names.isEmpty()) {
@@ -402,94 +367,32 @@ class MainActivity : Activity() {
         }
         Thread {
             for (n in names) {
-                if (!thumbCache.containsKey(n)) decodeThumb(n)?.let { thumbCache[n] = it }
+                if (!thumbs.containsKey(n)) decodeThumb(n)?.let { bmp ->
+                    handler.post { thumbs[n] = bmp }
+                }
             }
-            handler.post { wallGrid.invalidateViews() }
         }.start()
-    }
-
-    private inner class TrackAdapter : BaseAdapter() {
-        override fun getCount(): Int = Playlist.tracks.size
-        override fun getItem(position: Int): Any = position
-        override fun getItemId(position: Int): Long = position.toLong()
-        override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View {
-            val v = convertView ?: layoutInflater.inflate(R.layout.row_track, parent, false)
-            val t = Playlist.tracks[position]
-            val no = v.findViewById<TextView>(R.id.row_no)
-            val title = v.findViewById<TextView>(R.id.row_title)
-            val sub = v.findViewById<TextView>(R.id.row_sub)
-            val state = v.findViewById<TextView>(R.id.row_state)
-            // #20 光标由行背景绘制（不依赖 listSelector）
-            if (position == panelCursor) v.setBackgroundResource(R.drawable.row_cursor)
-            else v.background = null
-            no.text = String.format(Locale.ENGLISH, "%02d", position + 1)
-            title.text = t.title
-            sub.text = t.sub
-            state.text =
-                if (position == engine.currentIndex && engine.isPlaying) "PLAYING" else ""
-            title.typeface = fontSerif // #5 复用缓存字体
-            sub.typeface = fontSans
-            no.typeface = fontSans
-            state.typeface = fontSans
-            return v
-        }
-    }
-
-    /** #17 背景宫格：格 0 为自动切换开关，格 1..n 为壁纸缩略图 */
-    private inner class WallGridAdapter : BaseAdapter() {
-        override fun getCount(): Int = panelCount()
-        override fun getItem(position: Int): Any = position
-        override fun getItemId(position: Int): Long = position.toLong()
-        override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View {
-            val v = convertView ?: layoutInflater.inflate(R.layout.cell_wall, parent, false)
-            val thumb = v.findViewById<ImageView>(R.id.cell_thumb)
-            val toggle = v.findViewById<android.widget.LinearLayout>(R.id.cell_toggle)
-            val toggleLabel = v.findViewById<TextView>(R.id.cell_toggle_label)
-            val toggleSub = v.findViewById<TextView>(R.id.cell_toggle_sub)
-            val toggleState = v.findViewById<TextView>(R.id.cell_toggle_state)
-            if (position == 0) {
-                thumb.visibility = View.GONE
-                toggle.visibility = View.VISIBLE
-                val on = wallpaper.autoRotate
-                toggleState.text = if (on) "ON" else "OFF"
-                @Suppress("DEPRECATION")
-                toggleState.setTextColor(resources.getColor(if (on) R.color.gold else R.color.cream_dim))
-                // #20 光标 > 普通格背景
-                v.setBackgroundResource(if (position == panelCursor) R.drawable.cell_cursor else R.drawable.panel_bg)
-            } else {
-                toggle.visibility = View.GONE
-                thumb.visibility = View.VISIBLE
-                val i = position - 1
-                thumb.setImageBitmap(wallpaper.nameAt(i)?.let { thumbCache[it] })
-                // #20 光标 > 已应用 > 普通
-                v.setBackgroundResource(
-                    when {
-                        position == panelCursor -> R.drawable.cell_cursor
-                        i == wallpaper.currentIndex -> R.drawable.thumb_bg_selected
-                        else -> R.drawable.panel_bg
-                    }
-                )
-            }
-            toggleLabel.typeface = fontSans
-            toggleSub.typeface = fontSans
-            toggleState.typeface = fontSans
-            return v
-        }
     }
 
     // ── 遥控器 / 按键交互 ────────────────────────────────────
 
-    /** #21 焦点停在可点击面板元素上时 View.onKeyDown 会吞掉单击确认键（仅长按 repeat 漏下），
-     *  故面板打开时先于焦点链拦截按键 */
+    /** #compose-tv-migration 面板打开时只拦 BACK/MENU；方向与确认键交给 Compose 焦点系统 */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (panelWrap.visibility == View.VISIBLE && event.action == KeyEvent.ACTION_DOWN &&
-            panelKey(event.keyCode, event.repeatCount)
-        ) return true
+        if (panelWrap.visibility == View.VISIBLE && event.action == KeyEvent.ACTION_DOWN) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_BACK,
+                KeyEvent.KEYCODE_MENU,
+                KeyEvent.KEYCODE_SETTINGS -> {
+                    togglePanel()
+                    return true
+                }
+            }
+        }
         return super.dispatchKeyEvent(event)
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (panelWrap.visibility == View.VISIBLE) return panelKey(keyCode, event?.repeatCount ?: 0)
+        if (panelWrap.visibility == View.VISIBLE) return false // 面板键走 Compose / dispatchKeyEvent
         return when (keyCode) {
             KeyEvent.KEYCODE_DPAD_CENTER,
             KeyEvent.KEYCODE_ENTER,
@@ -537,66 +440,6 @@ class MainActivity : Activity() {
 
             else -> super.onKeyDown(keyCode, event)
         }
-    }
-
-    private fun panelKey(keyCode: Int, repeatCount: Int = 0): Boolean {
-        val cols = wallGrid.numColumns
-        val pos = panelCursor
-        return when (keyCode) {
-            // #20 背景宫格二维导航：←→ 行内移动，行端越界才切页签（曲目页 ←→ 直接切）
-            KeyEvent.KEYCODE_DPAD_LEFT -> {
-                if (panelMode == PanelMode.BACKGROUNDS && pos % cols != 0) {
-                    movePanelCursor(pos - 1)
-                } else {
-                    switchPanelTab()
-                }
-                true
-            }
-
-            KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                val atRowEnd = pos % cols == cols - 1 || pos == panelCount() - 1
-                if (panelMode == PanelMode.BACKGROUNDS && !atRowEnd) {
-                    movePanelCursor(pos + 1)
-                } else {
-                    switchPanelTab()
-                }
-                true
-            }
-
-            KeyEvent.KEYCODE_DPAD_UP -> {
-                val step = if (panelMode == PanelMode.BACKGROUNDS) cols else 1
-                movePanelCursor(pos - step); true
-            }
-
-            KeyEvent.KEYCODE_DPAD_DOWN -> {
-                val step = if (panelMode == PanelMode.BACKGROUNDS) cols else 1
-                movePanelCursor(pos + step); true
-            }
-
-            KeyEvent.KEYCODE_DPAD_CENTER,
-            KeyEvent.KEYCODE_ENTER,
-            KeyEvent.KEYCODE_NUMPAD_ENTER,
-            KeyEvent.KEYCODE_SPACE -> {
-                if (repeatCount == 0) panelActivate(panelCursor) // #21 长按 repeat 只消费不重发
-                true
-            }
-
-            KeyEvent.KEYCODE_BACK,
-            KeyEvent.KEYCODE_MENU,
-            KeyEvent.KEYCODE_SETTINGS -> {
-                togglePanel(); true
-            }
-
-            else -> false
-        }
-    }
-
-    /** #14/#20 在「曲目 / 背景」页签间切换 */
-    private fun switchPanelTab() {
-        panelMode =
-            if (panelMode == PanelMode.TRACKS) PanelMode.BACKGROUNDS else PanelMode.TRACKS
-        applyPanelMode()
-        movePanelCursor(0)
     }
 
     private fun changeVolume(delta: Float) {

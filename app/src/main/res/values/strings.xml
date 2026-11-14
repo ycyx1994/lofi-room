@@ -6,8 +6,8 @@
     <string name="hint">OK 播放/暂停&#160;&#160;&#160;← → 切歌&#160;&#160;&#160;↑↓ 音量&#160;&#160;&#160;MENU 播放列表</string>
     <string name="panel_title">PLAYLIST · 曲目</string>
     <string name="panel_title_bg">BACKGROUND · 背景</string>
-    <string name="panel_hint">←→ 切页签 · ↑↓ 选择 · OK 播放 · MENU/BACK 关闭</string>
-    <string name="panel_hint_bg">↑↓←→ 选图 · 端点切页签 · OK 设置 · MENU/BACK 关闭</string>
+    <string name="panel_hint">↑↓←→ 选择 · 上下切页签 · OK 播放 · MENU/BACK 关闭</string>
+    <string name="panel_hint_bg">↑↓←→ 选图 · 上下切页签 · OK 设置 · MENU/BACK 关闭</string>
     <string name="auto_rotate">自动切换</string>
     <string name="auto_rotate_sub">每 10 分钟</string>
 </resources>

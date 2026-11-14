@@ -49,6 +49,7 @@ dependencies {
     // 故取 Compose 1.8.1（BOM 2025.05.00，minSdk 21）+ tv-material 1.0.1（minSdk 21，要求 Compose ≥1.6.8）
     val composeBom = platform("androidx.compose:compose-bom:2025.05.00")
     implementation(composeBom)
+    implementation("androidx.activity:activity:1.9.3") // ComponentActivity 提供 ViewTreeLifecycleOwner
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.tv:tv-material:1.0.1")
