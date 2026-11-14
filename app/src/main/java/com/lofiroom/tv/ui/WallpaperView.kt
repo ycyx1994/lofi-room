@@ -34,13 +34,15 @@ class WallpaperView @JvmOverloads constructor(
     private var current: Bitmap? = null
     private var previous: Bitmap? = null
     private var switchAtMs = -1L
-    private var totalMs = 0L
 
     private val fadeMs = 2000L // #13 稍长的溶解 + smoothstep 缓动，过渡更柔
     private val holdMs = 600_000L // #14 自动切换间隔 10 分钟
     private val kenBurnsMs = 60_000L // 推镜时长（与切换间隔解耦）
     private var dirCurrent = 1f // #13 推镜方向逐张交替（1=推近，-1=拉远）
     private var dirPrev = 1f
+    private var zoomStart = 1.02f // #22 当前图出现时的缩放（接续上一张此刻的缩放，切换无跳变）
+    private var prevZoomStart = 1.02f // #22 旧图被换下时的起始缩放
+    private var prevBaseP = 0f // #22 旧图被换下时的推镜进度（不再假设走满 60s）
     private val executor = Executors.newSingleThreadExecutor()
     @Volatile
     private var running = true
@@ -86,13 +88,19 @@ class WallpaperView @JvmOverloads constructor(
             post {
                 advancing = false
                 if (!running || bmp == null) return@post
+                // #22 推镜接续：旧图从真实进度续行，新图从旧图此刻缩放出发，消除切换跳变
+                prevBaseP = ((System.currentTimeMillis() - switchAtMs).coerceAtLeast(0L)
+                    .toFloat() / kenBurnsMs).coerceIn(0f, 1f)
+                prevZoomStart = zoomStart
+                val dropped = previous // #22 快速连切时回收被挤掉的旧图层，防位图堆积
                 previous = current
                 current = bmp
+                if (dropped != null && dropped !== bmp) dropped.recycle()
                 dirPrev = dirCurrent
                 dirCurrent = -dirCurrent
+                zoomStart = zoomFor(prevBaseP, dirPrev, prevZoomStart)
                 index = target
                 switchAtMs = System.currentTimeMillis()
-                totalMs = kenBurnsMs
                 onWallpaperChange?.invoke(index, names.size)
             }
         }
@@ -115,7 +123,6 @@ class WallpaperView @JvmOverloads constructor(
                 if (names.isEmpty()) return@post
                 // #9 无论成败都武装定时器，否则 doFrame 的 switchAtMs>0 守卫会让 advance 永不触发
                 switchAtMs = System.currentTimeMillis()
-                totalMs = kenBurnsMs
                 if (bmp == null) return@post
                 index = start
                 current = bmp
@@ -143,12 +150,18 @@ class WallpaperView @JvmOverloads constructor(
                     return@post
                 }
                 failStreak = 0
+                // #22 推镜接续：同 show()
+                prevBaseP = ((System.currentTimeMillis() - switchAtMs).coerceAtLeast(0L)
+                    .toFloat() / kenBurnsMs).coerceIn(0f, 1f)
+                prevZoomStart = zoomStart
+                val dropped = previous // #22 快速连切时回收被挤掉的旧图层
                 previous = current
                 current = bmp
+                if (dropped != null && dropped !== bmp) dropped.recycle()
                 dirPrev = dirCurrent
-                dirCurrent = -dirCurrent // #13 逐张交替推近/拉远，避免每张同节奏
+                dirCurrent = -dirCurrent
+                zoomStart = zoomFor(prevBaseP, dirPrev, prevZoomStart)
                 switchAtMs = System.currentTimeMillis()
-                totalMs = kenBurnsMs
                 onWallpaperChange?.invoke(index, names.size)
             }
         }
@@ -183,25 +196,27 @@ class WallpaperView @JvmOverloads constructor(
         val p = (elapsed.toFloat() / fadeMs).coerceIn(0f, 1f)
         val eased = p * p * (3f - 2f * p)
 
-        // 旧图淡出：#13 保持自己的推镜轨迹继续漂移，不再跳回基准缩放
+        // 旧图淡出：#22 从被换下时的真实进度沿自身轨迹续行，与新图此刻缩放一致
         previous?.let {
-            val prevProgress = 1f + elapsed.toFloat() / totalMs
-            drawBitmap(canvas, it, 1f - eased, zoomFor(prevProgress, dirPrev))
+            val prevProgress = prevBaseP + elapsed.toFloat() / kenBurnsMs
+            drawBitmap(canvas, it, 1f - eased, zoomFor(prevProgress, dirPrev, prevZoomStart))
             if (elapsed > fadeMs) {
                 if (it !== current) it.recycle()
                 previous = null
             }
         }
 
-        // 新图淡入 + Ken Burns 推镜
+        // 新图淡入 + Ken Burns 推镜（#22 从旧图此刻缩放出发，切换无跳变）
         val alpha = if (previous == null) 1f else eased
-        val progress = (elapsed.toFloat() / totalMs).coerceIn(0f, 1f)
-        drawBitmap(canvas, bmp, alpha, zoomFor(progress, dirCurrent))
+        val progress = (elapsed.toFloat() / kenBurnsMs).coerceIn(0f, 1f)
+        drawBitmap(canvas, bmp, alpha, zoomFor(progress, dirCurrent, zoomStart))
     }
 
-    /** #13 Ken Burns 缩放：dir=1 从 1.02 推近到 1.08，dir=-1 反向拉远 */
-    private fun zoomFor(progress: Float, dir: Float): Float =
-        if (dir > 0) 1.02f + 0.06f * progress else 1.08f - 0.06f * progress
+    /** #22 推镜：从出现时缩放线性驶向本张极值（dir=1 推近至 1.08，dir=-1 拉远至 1.02） */
+    private fun zoomFor(progress: Float, dir: Float, start: Float): Float {
+        val end = if (dir > 0) 1.08f else 1.02f
+        return start + (end - start) * progress
+    }
 
     private fun drawBitmap(canvas: Canvas, bmp: Bitmap, alpha: Float, zoom: Float) {
         if (alpha <= 0f || bmp.isRecycled) return
