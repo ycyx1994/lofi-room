@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 Lofi Room TV — 素材处理脚本
-1) 把参考图里烤死的叠加文字用「高斯扩散修复」抹掉，得到干净壁纸
-2) 裁剪/缩放到 2560 宽，输出到 app/src/main/assets/wallpapers/
+1) 把 wallpapers_raw/gen_*.jpg（AI 生成无文字图）16:9 裁切并导出到 app/src/main/assets/wallpapers/
+2) [可选] 把带叠加文字的参考图用「高斯扩散修复」抹掉（JOBS 配置，当前为空）
 3) 生成 3 张暖色抽象壁纸（渐变+颗粒+暗角）
 4) 生成应用图标 / Android TV banner
 """
@@ -133,43 +133,10 @@ def save_wall(arr, name, max_w=2560):
     print(f"  -> {name}  {im.width}x{im.height}  {os.path.getsize(path)//1024}KB")
 
 # ---------------------------------------------------------------- 每张图的修复配置
-# boxes 为原图坐标 (x0, y0, x1, y1)，圈住烤死的叠加文字
-JOBS = [
-    # 用户截图1：阳台黄昏 "Lofi Room Playlist / CHILLNOVA + 波形"（中心） + 左下角"9人正在看"
-    dict(src="shot_1.jpg", name="wall_01.jpg", thresh=22, boxes=[
-        (880, 490, 1765, 760),      # 中心标题块 + 波形
-        (210, 1135, 480, 1200),     # 左下角人数水印
-    ]),
-    # 用户截图2：深夜书房 "SoulHaus + 小波形 + FLOW 段落 + 右侧手写体"
-    dict(src="shot_2.jpg", name="wall_02.jpg", thresh=22, boxes=[
-        (1080, 35, 1540, 165),      # SoulHaus
-        (1110, 185, 1500, 255),     # 顶部小波形
-        (240, 1045, 1225, 1200),    # 左下 FLOW + 段落
-        (1875, 750, 2270, 845),     # 右侧手写体
-        (210, 1135, 480, 1200),     # 水印
-    ]),
-    # 用户截图3：黄昏拱门 "SoulHaus + ARCADE 段落 + 右侧羽毛笔"
-    dict(src="shot_3.jpg", name="wall_03.jpg", thresh=22, boxes=[
-        (1080, 35, 1540, 165),
-        (240, 1025, 1510, 1200),    # 左下 ARCADE + 段落（含第三行）
-        (1960, 695, 2180, 910),     # 右侧羽毛笔 + 手写体
-        (210, 1135, 480, 1200),
-    ]),
-    # 视频封面1：暖桌书房 "SoulHaus + 巨型 FLOW + 底部说明"
-    dict(src="cover_1.jpg", name="wall_04.jpg", thresh=22, boxes=[
-        (770, 30, 1160, 140),       # SoulHaus
-        (415, 285, 1525, 725),      # FLOW 巨字
-        (490, 945, 1540, 1045),     # 底部段落
-    ]),
-    # 视频封面2：壁炉与猫 "Jazz Vocal Playlist / CHILLNOVA"
-    dict(src="cover_2.jpg", name="wall_05.jpg", thresh=18, boxes=[
-        (120, 370, 1285, 595),
-    ]),
-    # 视频封面3：藤椅与窗 "Jazz Vocal Playlist / CHILLMUSIC"
-    dict(src="cover_3.jpg", name="wall_06.jpg", thresh=18, boxes=[
-        (540, 440, 1385, 595),
-    ]),
-]
+# boxes 为原图坐标 (x0, y0, x1, y1)，圈住烤死的叠加文字。
+# 当前 10 张壁纸均来自 AI 生成无文字图（wallpapers_raw/gen_*.jpg），故为空；
+# shot_*/cover_* 仅作风格参考保留在 wallpapers_raw。
+JOBS = []
 
 print("== 修复参考图文字 ==")
 for job in JOBS:
@@ -179,6 +146,46 @@ for job in JOBS:
     print(f"{job['src']}: mask px = {mask.sum()}")
     fixed = diffusion_inpaint(img, mask, iters=280)
     save_wall(fixed, job["name"])
+
+# ---------------------------------------------------------------- 干净壁纸（AI 生成、无文字，仅 16:9 裁切导出）
+def save_clean(src, name, max_w=2560):
+    im = Image.open(src).convert("RGB")
+    w, h = im.size
+    th = round(w * 9 / 16)
+    if th < h:
+        top = (h - th) // 2
+        im = im.crop((0, top, w, top + th))
+    elif th > h:
+        tw = round(h * 16 / 9)
+        left = (w - tw) // 2
+        im = im.crop((left, 0, left + tw, h))
+    if im.width > max_w:
+        im = im.resize((max_w, round(im.height * max_w / im.width)), Image.LANCZOS)
+    path = os.path.join(OUT, name)
+    im.save(path, "JPEG", quality=88, optimize=True, progressive=True)
+    print(f"  -> {name}  {im.width}x{im.height}  {os.path.getsize(path)//1024}KB")
+
+print("== 导出无文字生成壁纸 ==")
+for src, name in [
+    ("gen_01.jpg", "wall_01.jpg"),   # 城市夜景
+    ("gen_02.jpg", "wall_02.jpg"),   # 书桌
+    ("gen_03.jpg", "wall_03.jpg"),   # 客厅
+    ("gen_04.jpg", "wall_04.jpg"),   # 窗台植物
+    ("gen_05_v2.jpg", "wall_05.jpg"),   # 壁炉小猫（狸花猫，v2 按真猫照片对齐）
+    ("gen_06.jpg", "wall_06.jpg"),   # 森林单车
+    ("gen_07.jpg", "wall_07.jpg"),   # 雨窗花田
+    ("gen_08.jpg", "wall_08.jpg"),   # 深夜书桌
+    ("gen_09_v2.jpg", "wall_09.jpg"),   # 炉边小猫（狸花猫，v2 按真猫照片对齐）
+    ("gen_10.jpg", "wall_10.jpg"),   # 藤椅窗边
+    ("gen_11.jpg", "wall_11.jpg"),   # 暮色百叶窗
+    ("gen_12.jpg", "wall_12.jpg"),   # 书桌工位
+    ("gen_13.jpg", "wall_13.jpg"),   # 窗边小猫
+    ("gen_14.jpg", "wall_14.jpg"),   # 电视墙
+    ("gen_15.jpg", "wall_15.jpg"),   # 客厅全景
+    ("gen_16.jpg", "wall_16.jpg"),   # 沙发阅读
+    ("gen_17.jpg", "wall_17.jpg"),   # 暖光卧室
+]:
+    save_clean(os.path.join(RAW, src), name)
 
 # ---------------------------------------------------------------- 抽象暖色壁纸
 def warm_abstract(seed, palette, name):
@@ -209,9 +216,10 @@ def warm_abstract(seed, palette, name):
     save_wall(img, name)
 
 print("== 生成抽象壁纸 ==")
-warm_abstract(7, [(43, 27, 18), (201, 123, 61), (242, 227, 200), (92, 52, 30), (226, 168, 105), (58, 34, 22)], "wall_07.jpg")
-warm_abstract(21, [(28, 22, 20), (170, 92, 48), (235, 205, 168), (74, 40, 26), (212, 138, 82), (36, 26, 22)], "wall_08.jpg")
-warm_abstract(42, [(32, 30, 22), (140, 118, 74), (238, 226, 196), (72, 62, 38), (196, 158, 102), (42, 38, 26)], "wall_09.jpg")
+# 编号避开照片壁纸 wall_01..17
+warm_abstract(7, [(43, 27, 18), (201, 123, 61), (242, 227, 200), (92, 52, 30), (226, 168, 105), (58, 34, 22)], "wall_18.jpg")
+warm_abstract(21, [(28, 22, 20), (170, 92, 48), (235, 205, 168), (74, 40, 26), (212, 138, 82), (36, 26, 22)], "wall_19.jpg")
+warm_abstract(42, [(32, 30, 22), (140, 118, 74), (238, 226, 196), (72, 62, 38), (196, 158, 102), (42, 38, 26)], "wall_20.jpg")
 
 # ---------------------------------------------------------------- 图标 & TV banner
 # 品牌字标「lofi」：DM Serif Display 小写 + 暖金光晕 + 深蓝黑圆角块（用户提供参考样式）
