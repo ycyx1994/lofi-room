@@ -29,9 +29,9 @@
 
 ## 功能
 
-- **开机即播**：启动自动播放 3 首内置放松曲目（自合成，免版权）
+- **开机即播**：启动自动播放 9 首内置放松曲目（CC 爵士精选，Alex Morgan / Lao Ban）
 - **启动过渡**：`lofi` 字标遮罩淡入淡出，盖住首张壁纸的加载空窗
-- **壁纸轮播**：7 张暖调壁纸，交叉溶解 + Ken Burns 缓慢推镜；面板可手动选图，自动切换默认关闭（开启后 10 分钟一换）
+- **壁纸轮播**：17 张暖调壁纸，交叉溶解 + Ken Burns 缓慢推镜；面板可手动选图，自动切换默认关闭（开启后 10 分钟一换）
 - **实时波形**：72 根对称圆角波形条，挂在播放器音频链路上实时分析（无需录音权限）
 - **诗意文案**：每换一张壁纸，左下角文案随之切换（中英双语）
 - **主页标题**：显示当前英文月份，随月自动切换
@@ -85,8 +85,8 @@ app/src/main/
 │   │   └── VisualizerView.kt      # 音频波形条绘制
 │   └── data/Playlist.kt           # 曲目、壁纸与文案数据
 ├── assets/
-│   ├── music/                     # 3 首内置曲目 (.m4a)
-│   ├── wallpapers/                # 7 张壁纸 (wall_01..07.jpg)
+│   ├── music/                     # 9 首内置曲目 (.m4a)
+│   ├── wallpapers/                # 17 张壁纸 (wall_01..17.jpg)
 │   └── fonts/                     # Cormorant Garamond + Jost
 └── res/
     ├── layout/activity_main.xml   # 主布局（含启动遮罩与面板）
@@ -99,8 +99,9 @@ app/src/main/
 - **换音乐**：替换 `app/src/main/assets/music/` 下的 `.m4a`，同步修改
   `app/src/main/java/com/lofiroom/tv/data/Playlist.kt` 中的曲目元数据
 - **换文案**：修改 `Playlist.kt` 中的 `captions`
-- **素材处理**：`tools/process_wallpapers.py`（壁纸管线 + 图标 / banner / 启动字标）、
-  `tools/generate_music.py`（numpy 合成三首曲目）可复现全部内置素材
+- **素材处理**：`tools/process_wallpapers.py`（壁纸管线 + 图标 / banner / 启动字标）；
+  `tools/generate_music.py`（numpy 合成六首曲目）可复现 `archive/builtin_music/`
+  中归档的旧内置曲目
 
 ## 技术要点
 
