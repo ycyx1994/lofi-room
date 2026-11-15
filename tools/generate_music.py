@@ -2,10 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 Lofi Room TV — 音乐合成器
-用 numpy 合成三首无版权环境音乐（44.1kHz 立体声）：
+用 numpy 合成无版权环境音乐（44.1kHz 立体声），可指定曲名生成：
   1. Midnight Espresso  慢速爵士 · 咖啡馆电钢  72 BPM
   2. Rainy Window        雨夜钢琴 · 环境音层    60 BPM
   3. Bossa Candlelight   Bossa Nova · 烛光吉他  84 BPM
+  4. Velvet Hours        慢速爵士抒情 · 管乐主旋  68 BPM
+  5. Sunday Waltz        爵士华尔兹 · 流动旋律  92 BPM
+  6. Blue Hour           深夜蓝调叙事 · 长音留白  62 BPM
 输出 WAV → ffmpeg 转 AAC m4a 到 app/src/main/assets/music/
 """
 import os, sys, math, wave, subprocess
@@ -188,6 +191,35 @@ def chord_arp(tr, notes, t, dur, vel=1.0, spread=0.045, inst=epiano, pan=0.0):
     for k, m in enumerate(notes):
         tr.add(inst(midi2f(m), dur, vel * (1 - 0.04 * k)), t + k * spread, pan)
 
+def env_sus(n, note_dur, attack=0.12, release=0.5):
+    """持续型包络：线性起音 + 尾部释放，适合主旋律长音"""
+    t = np.arange(n) / SR
+    a = np.clip(t / max(attack, 1e-4), 0, 1)
+    d = np.clip((note_dur - t) / max(release, 1e-4), 0, 1)
+    return a * d
+
+def lead(freq, dur, vel=1.0):
+    """柔和管乐主旋律（暖铜管与单簧管取中）：慢起音、延迟颤音、少量气息"""
+    n = int(SR * (dur + 0.9))
+    body = dur * 0.98
+    vib = osc_vibrato(freq, n, vib_hz=4.7, vib_depth=0.0065, delay=0.55)
+    e = env_sus(n, body, 0.13, 0.5)
+    out = vib * e
+    out += 0.30 * osc_const(freq * 2, n) * env_sus(n, body, 0.10, 0.4)
+    out += 0.11 * osc_const(freq * 3, n) * env_sus(n, body, 0.08, 0.3)
+    out += RNG.normal(0, 1, n) * e * 0.045          # 气息
+    out = fft_lowpass(out, 3300)
+    return out * (vel * 0.22)
+
+def melody(tr, bars, t0, beat, pan=0.15, vel=1.0, inst=lead):
+    """按 (midi, 拍数) 序列逐小节铺旋律；midi=None 表示休止"""
+    t = t0
+    for bar in bars:
+        for m, b in bar:
+            if m is not None:
+                tr.add(inst(midi2f(m), b * beat, vel), t, pan)
+            t += b * beat
+
 # ---------------------------------------------------------------- 曲目 1: Midnight Espresso
 def track_midnight_espresso():
     BARS = 4 * 60 / 72          # 3.333s
@@ -307,12 +339,158 @@ def track_bossa_candlelight():
     tr.master()
     tr.save("bossa_candlelight")
 
+# ---------------------------------------------------------------- 曲目 4: Velvet Hours
+def track_velvet_hours():
+    """68 BPM 慢速爵士抒情 · 柔和管乐主旋律 · 咖啡馆打烊前的丝绒时光"""
+    BAR = 4 * 60 / 68                 # 3.529s
+    N_BARS = 48                       # ≈ 169s（16 小节表循环 3 轮）
+    tr = Track(N_BARS * BAR + 4)
+    beat = 60 / 68
+    prog = [  # (bass root, voicing) 每小节一换 · F 大调 16 小节表
+        (41, [60, 64, 67, 69]), (38, [60, 62, 65, 69]),  # Fmaj9, Dm9
+        (43, [62, 65, 67, 70]), (36, [60, 62, 64, 69]),  # Gm9, C13
+        (45, [60, 64, 67, 71]), (38, [60, 62, 65, 69]),  # Am9, Dm9
+        (43, [62, 65, 67, 70]), (36, [60, 65, 67, 72]),  # Gm9, C7sus
+        (41, [60, 64, 67, 69]), (38, [60, 62, 65, 69]),  # Fmaj9, Dm9
+        (43, [62, 65, 67, 70]), (36, [60, 62, 64, 69]),  # Gm9, C13
+        (46, [62, 65, 69, 72]), (45, [60, 64, 67, 69]),  # Bbmaj7, Am7
+        (43, [62, 65, 67, 70]), (36, [60, 62, 64, 69]),  # Gm9, C13
+    ]
+    # 16 小节抒情主题（F 大调，级进为主、偶有跳进）
+    form = [
+        [(69, 2), (72, 2)], [(74, 3), (72, 1)], [(69, 2), (67, 2)], [(65, 4)],
+        [(67, 2), (69, 2)], [(72, 3), (69, 1)], [(67, 2), (64, 2)], [(65, 4)],
+        [(72, 2), (74, 2)], [(76, 3), (74, 1)], [(72, 2), (69, 2)], [(67, 4)],
+        [(69, 2), (72, 2)], [(74, 2), (72, 2)], [(69, 2), (67, 2)], [(65, 4)],
+    ]
+    for bar in range(N_BARS):
+        t0 = bar * BAR
+        b, voic = prog[bar % 16]
+        # 爵士补位：2、4 拍轻和弦
+        tr.add(epiano(midi2f(voic[0]), BAR * 0.5, 0.52), t0 + beat, -0.12)
+        chord_arp(tr, voic[1:], t0 + beat, BAR * 0.45, vel=0.5, spread=0.028, pan=-0.12)
+        chord_arp(tr, voic, t0 + 3 * beat, BAR * 0.4, vel=0.38, spread=0.022, pan=-0.12)
+        # 贝斯：1 拍根音长音 + 3 拍五度
+        tr.add(bass(midi2f(b - 12), BAR * 0.55), t0, 0.0, 0.85)
+        tr.add(bass(midi2f(b), BAR * 0.32), t0 + 2 * beat, 0.0, 0.5)
+        # 鼓刷 2/4 拍 + 轻沙锤
+        tr.add(brush(0.32, 0.13), t0 + beat, 0.12)
+        tr.add(brush(0.32, 0.15), t0 + 3 * beat, 0.12)
+        for k in range(4):
+            tr.add(shaker(0.08, 0.10), t0 + k * beat + beat / 2, -0.28)
+    # 主旋律：循环 3 轮，第 2 轮起偶发高八度装饰
+    for loop in range(3):
+        shift = 12 if loop == 2 else 0
+        lyr = [[(m + shift, b) for m, b in bar] for bar in form]
+        melody(tr, lyr, loop * 16 * BAR, beat, pan=0.16, vel=0.92 if loop != 1 else 0.82)
+    tr.reverb(mix=0.36, decay=2.2)
+    tr.master()
+    tr.save("velvet_hours")
+
+# ---------------------------------------------------------------- 曲目 5: Sunday Waltz
+def track_sunday_waltz():
+    """92 BPM 爵士华尔兹 · 3/4 流动旋律 · 周日早午餐的松弛感"""
+    BAR = 3 * 60 / 92                 # 1.957s（3/4）
+    N_BARS = 80                       # ≈ 157s（16 小节表循环 5 轮）
+    tr = Track(N_BARS * BAR + 4)
+    beat = 60 / 92
+    prog = [  # C 大调 16 小节表
+        (48, [60, 64, 67, 71]), (48, [60, 64, 67, 71]),  # Cmaj7 ×2
+        (45, [60, 64, 67, 69]), (45, [60, 64, 67, 69]),  # Am7 ×2
+        (41, [60, 64, 65, 69]), (41, [60, 64, 65, 69]),  # Fmaj7 ×2
+        (43, [62, 65, 67, 70]), (43, [62, 64, 67, 70]),  # G7sus, G7
+        (48, [60, 64, 67, 71]), (40, [62, 64, 67, 71]),  # Cmaj7, Em7
+        (41, [60, 64, 65, 69]), (38, [60, 62, 65, 69]),  # Fmaj7, Dm7
+        (43, [62, 64, 67, 70]), (43, [62, 64, 67, 70]),  # G7 ×2
+        (48, [60, 64, 67, 71]), (43, [62, 64, 67, 70]),  # Cmaj7, G7
+    ]
+    # 3/4 流动主题（C 大调）
+    form = [
+        [(72, 2), (71, 1)], [(69, 2), (67, 1)], [(64, 1), (65, 1), (67, 1)], [(69, 3)],
+        [(71, 2), (72, 1)], [(74, 2), (72, 1)], [(69, 1), (67, 1), (65, 1)], [(64, 3)],
+        [(76, 2), (74, 1)], [(72, 2), (71, 1)], [(69, 1), (71, 1), (72, 1)], [(74, 3)],
+        [(72, 2), (69, 1)], [(71, 2), (69, 1)], [(67, 1), (69, 1), (67, 1)], [(64, 3)],
+    ]
+    for bar in range(N_BARS):
+        t0 = bar * BAR
+        b, voic = prog[bar % 16]
+        # 华尔兹：1 拍贝斯，2、3 拍和弦
+        tr.add(bass(midi2f(b - 12), beat * 1.6), t0, 0.0, 0.8)
+        chord_arp(tr, voic, t0 + beat, beat * 1.1, vel=0.52, spread=0.02, pan=-0.1)
+        chord_arp(tr, voic, t0 + 2 * beat, beat * 0.9, vel=0.36, spread=0.02, pan=-0.1)
+        tr.add(shaker(0.09, 0.12), t0 + 2 * beat + beat / 2, -0.25)
+        if bar % 4 == 3:
+            tr.add(brush(0.28, 0.12), t0 + 2 * beat, 0.15)
+    for loop in range(5):
+        # 后两轮把主旋律抬高八度一层作叠奏（轻），主题本体保持中音区
+        lyr = form if loop < 4 else [[(m + 12, b) for m, b in bar] for bar in form]
+        melody(tr, lyr, loop * 16 * BAR, beat, pan=0.12, vel=0.72 if loop < 4 else 0.5)
+    tr.reverb(mix=0.32, decay=2.0)
+    tr.master()
+    tr.save("sunday_waltz")
+
+# ---------------------------------------------------------------- 曲目 6: Blue Hour
+def track_blue_hour():
+    """62 BPM 深夜蓝调叙事 · 长音旋律留白 · 打烊后的最后一杯"""
+    BAR = 4 * 60 / 62                 # 3.87s
+    N_BARS = 48                       # ≈ 186s（16 小节表循环 3 轮）
+    tr = Track(N_BARS * BAR + 4)
+    beat = 60 / 62
+    prog = [  # a 小调 16 小节表
+        (45, [60, 64, 67, 71]), (45, [60, 64, 67, 71]),  # Am9 ×2
+        (41, [60, 64, 65, 69]), (41, [60, 64, 65, 69]),  # Fmaj7 ×2
+        (38, [60, 62, 65, 69]), (38, [60, 62, 65, 69]),  # Dm9 ×2
+        (40, [62, 64, 67, 71]), (40, [62, 64, 67, 70]),  # E7sus, E7
+        (45, [60, 64, 67, 71]), (48, [60, 64, 67, 71]),  # Am9, Cmaj7
+        (41, [60, 64, 65, 69]), (38, [60, 62, 65, 69]),  # Fmaj7, Dm9
+        (45, [60, 64, 67, 71]), (38, [60, 62, 65, 69]),  # Am9, Dm9
+        (40, [62, 64, 67, 70]), (45, [60, 64, 67, 71]),  # E7, Am9
+    ]
+    # 长音叙事主题（a 小调，乐句间留白）
+    form = [
+        [(69, 4)], [(72, 3), (71, 1)], [(69, 2), (67, 2)], [(64, 4)],
+        [(67, 2), (69, 2)], [(72, 4)], [(71, 2), (69, 2)], [(67, 3), (None, 1)],
+        [(72, 2), (74, 2)], [(76, 4)], [(74, 2), (72, 2)], [(71, 4)],
+        [(69, 2), (71, 2)], [(72, 3), (69, 1)], [(67, 2), (64, 2)], [(69, 3), (None, 1)],
+    ]
+    for bar in range(N_BARS):
+        t0 = bar * BAR
+        b, voic = prog[bar % 16]
+        # 钢琴稀疏琶音
+        seq = [0, 2, 1, 3]
+        for k, vi in enumerate(seq):
+            tr.add(epiano(midi2f(voic[vi]), BAR * 0.85, 0.5 + 0.1 * (k == 0)),
+                   t0 + k * beat + (beat / 2 if k % 2 else 0), 0.1 * (k - 1.5) / 2)
+        # 贝斯长音
+        tr.add(bass(midi2f(b - 12), BAR * 0.92), t0, 0.0, 0.72)
+        # 每 4 小节一声轻钟点缀
+        if bar % 4 == 2:
+            tr.add(bell(midi2f([81, 79, 76, 72][bar % 4]), BAR * 1.4, 0.5), t0 + 2 * beat, 0.3)
+        if bar % 8 == 7:
+            tr.add(brush(0.35, 0.1), t0 + 3 * beat, 0.18)
+    for loop in range(3):
+        lyr = [[(None if m is None else m + (12 if loop == 2 and i % 3 == 0 else 0), b)
+                for m, b in bar] for i, bar in enumerate(form)]
+        melody(tr, lyr, loop * 16 * BAR, beat, pan=0.1, vel=0.88 if loop != 1 else 0.8)
+    tr.reverb(mix=0.42, decay=2.7)
+    tr.master()
+    tr.save("blue_hour")
+
 # ---------------------------------------------------------------- 入口
+CATALOG = {
+    "midnight_espresso": track_midnight_espresso,
+    "rainy_window": track_rainy_window,
+    "bossa_candlelight": track_bossa_candlelight,
+    "velvet_hours": track_velvet_hours,
+    "sunday_waltz": track_sunday_waltz,
+    "blue_hour": track_blue_hour,
+}
+
 if __name__ == "__main__":
-    print("== 合成 Midnight Espresso (72 BPM 爵士) ==")
-    track_midnight_espresso()
-    print("== 合成 Rainy Window (60 BPM 雨夜钢琴) ==")
-    track_rainy_window()
-    print("== 合成 Bossa Candlelight (84 BPM bossa) ==")
-    track_bossa_candlelight()
+    names = sys.argv[1:] or list(CATALOG)
+    for nm in names:
+        if nm not in CATALOG:
+            sys.exit(f"unknown track: {nm} (choose from {list(CATALOG)})")
+        print(f"== 合成 {nm} ==")
+        CATALOG[nm]()
     print("done.")
