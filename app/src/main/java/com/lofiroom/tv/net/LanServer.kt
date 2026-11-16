@@ -15,6 +15,9 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * #23 局域网 H5 管理页服务：NanoHTTPD 内嵌 HTTP。
@@ -94,6 +97,8 @@ class LanServer(
         }
         when {
             path == "api/state" && method == Method.GET -> return state()
+            path == "api/export" && method == Method.GET -> return export(session)
+            path == "api/import" && method == Method.POST -> return importBackup(session)
             path == "api/wallpapers" && method == Method.GET -> return wallpapers()
             path == "api/wallpapers" && method == Method.POST -> return uploadWallpaper(session)
             path == "api/tracks" && method == Method.GET -> return tracks()
@@ -176,6 +181,9 @@ class LanServer(
             arr.put(
                 JSONObject()
                     .put("id", i)
+                    // 缓存键：落盘名唯一（时间戳前缀）。H5 缩略图 URL 带上它做 cache-buster——
+                    // 删除再上传后下标会漂移，若只按下标缓存，浏览器会把旧缩略图串给新图
+                    .put("key", n)
                     .put("name", CustomLibrary.wallpaperDisplayName(i))
                     .put("builtin", !n.startsWith(CustomLibrary.CUSTOM_PREFIX))
             )
@@ -205,6 +213,54 @@ class LanServer(
         val r = NanoHTTPD.newFixedLengthResponse(Status.OK, "image/jpeg", cached.inputStream(), cached.length())
         r.addHeader("Cache-Control", "max-age=3600")
         return r
+    }
+
+    /** 导出备份：自定义内容打包 zip 供手机下载。part: all 全量 / wall 照片包 / music 音乐包 */
+    private fun export(session: IHTTPSession): Response {
+        val part = when (session.parms["part"]) {
+            "wall" -> "wall"; "music" -> "music"; else -> "all"
+        }
+        // 大音乐包优先走外部缓存（共享存储），避免挤爆内部 cache
+        val tmpDir = context.externalCacheDir ?: context.cacheDir
+        val tmp = File.createTempFile("lofiroom-export", ".zip", tmpDir)
+        try {
+            tmp.outputStream().use { CustomLibrary.exportZip(it, part) }
+        } catch (e: Exception) {
+            tmp.delete()
+            return bad("导出失败：$e")
+        }
+        val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
+        val label = when (part) {
+            "wall" -> "lofiroom-wallpapers"; "music" -> "lofiroom-music"; else -> "lofiroom-backup"
+        }
+        val r = NanoHTTPD.newFixedLengthResponse(Status.OK, "application/zip", tmp.inputStream(), tmp.length())
+        r.addHeader("Content-Disposition", "attachment; filename=\"$label-$stamp.zip\"")
+        r.addHeader("Cache-Control", "no-store")
+        return r
+    }
+
+    /** 导入备份：手机上传 zip → 校验 → 恢复。mode: replace 覆盖恢复（默认）/ merge 合并导入 */
+    private fun importBackup(session: IHTTPSession): Response {
+        val len = session.headers["content-length"]?.toLongOrNull() ?: -1L
+        if (len > MAX_IMPORT_ZIP_BYTES + FORM_OVERHEAD) return payloadTooLarge()
+        val files = mutableMapOf<String, String>()
+        session.parseBody(files)
+        val tmp = File(files["file"] ?: return bad("缺少文件字段 file"))
+        if (tmp.length() > MAX_IMPORT_ZIP_BYTES) return payloadTooLarge()
+        val replace = session.parms["mode"] != "merge"
+        return try {
+            val r = CustomLibrary.importZip(tmp.inputStream(), replace)
+            json(
+                JSONObject()
+                    .put("ok", true)
+                    .put("walls", r.walls)
+                    .put("tracks", r.tracks)
+                    .put("bytes", r.bytes)
+                    .put("mode", if (replace) "replace" else "merge")
+            )
+        } catch (e: Exception) {
+            bad(e.message ?: "导入失败")
+        }
     }
 
     // ── 上传 ────────────────────────────────────────────────
@@ -292,6 +348,7 @@ class LanServer(
         private const val SOCKET_READ_TIMEOUT = 50_000 // 大文件 Wi-Fi 上传留足读超时
         private const val MAX_WALL_BYTES = 20L * 1024 * 1024
         private const val MAX_TRACK_BYTES = 100L * 1024 * 1024
+        private const val MAX_IMPORT_ZIP_BYTES = 512L * 1024 * 1024 // 导入备份 zip 上限
         private const val FORM_OVERHEAD = 1L * 1024 * 1024 // multipart 边界/字段余量
         private val WALL_EXTS = setOf("jpg", "jpeg", "png", "webp")
         private val TRACK_EXTS = setOf("mp3", "m4a", "wav", "aac", "flac", "ogg")

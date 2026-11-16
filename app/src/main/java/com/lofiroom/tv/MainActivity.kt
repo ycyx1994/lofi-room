@@ -551,6 +551,9 @@ class MainActivity : ComponentActivity() {
             handler.postDelayed({ warmThumbs() }, 600) // 等壁纸列表载入
             return
         }
+        // 库变更（删除）后清掉已移除壁纸的缩略图残留，防止内存驻留与后续串图
+        val nameSet = names.toSet()
+        handler.post { thumbs.keys.retainAll(nameSet) }
         Thread {
             for (n in names) {
                 if (!thumbs.containsKey(n)) decodeThumb(n)?.let { bmp ->

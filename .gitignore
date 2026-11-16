@@ -20,3 +20,7 @@ vendor/
 
 # 构建产物 APK
 *.apk
+
+# 电视数据备份（用户照片/音乐，勿入库）
+lofiroom-backup-*/
+lofiroom-backup-*.zip
