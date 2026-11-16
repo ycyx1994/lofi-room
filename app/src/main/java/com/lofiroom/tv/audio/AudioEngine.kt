@@ -14,8 +14,9 @@ import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.TeeAudioProcessor
-import com.lofiroom.tv.data.Playlist
+import com.lofiroom.tv.custom.CustomLibrary
 import com.lofiroom.tv.data.Track
+import com.lofiroom.tv.data.mediaUri
 
 /**
  * 音频引擎：ExoPlayer + 自定义 AudioSink 挂 TeeAudioProcessor，
@@ -32,6 +33,7 @@ class AudioEngine(context: Context, private val tap: VisualizerTap) {
     private val player: ExoPlayer
     var listener: Listener? = null
     private var consecutiveErrors = 0
+    private var currentUris: List<String> = CustomLibrary.tracks.map { it.mediaUri() }
 
     init {
         val tee = TeeAudioProcessor(tap)
@@ -53,7 +55,8 @@ class AudioEngine(context: Context, private val tap: VisualizerTap) {
             .setAudioAttributes(attrs, true)
             .build()
 
-        val items = Playlist.tracks.map { MediaItem.fromUri("asset:///" + it.asset) }
+        // #23 曲目走合并库（内置 assets + 自定义文件），mediaUri() 统一分流
+        val items = CustomLibrary.tracks.map { MediaItem.fromUri(it.mediaUri()) }
         player.setMediaItems(items)
         player.repeatMode = Player.REPEAT_MODE_ALL
         player.volume = 0.8f
@@ -62,7 +65,8 @@ class AudioEngine(context: Context, private val tap: VisualizerTap) {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 val i = player.currentMediaItemIndex
                 mainHandler.post {
-                    listener?.onTrackChanged(Playlist.tracks[i], i, Playlist.tracks.size)
+                    val ts = CustomLibrary.tracks
+                    ts.getOrNull(i)?.let { listener?.onTrackChanged(it, i, ts.size) }
                 }
             }
 
@@ -75,7 +79,7 @@ class AudioEngine(context: Context, private val tap: VisualizerTap) {
             override fun onPlayerError(error: PlaybackException) {
                 // #10 坏曲目自动跳下一首；连续失败一轮说明全部损坏，停止重试避免忙循环
                 consecutiveErrors++
-                if (consecutiveErrors >= Playlist.tracks.size) {
+                if (consecutiveErrors >= player.mediaItemCount) {
                     player.playWhenReady = false
                     return
                 }
@@ -110,6 +114,30 @@ class AudioEngine(context: Context, private val tap: VisualizerTap) {
     fun playIndex(i: Int) {
         player.seekTo(i, 0)
         player.playWhenReady = true
+    }
+
+    /** #23 自定义曲目增删/重命名/移动后重建播放列表：
+     *  URI 无变化则不动（如仅改名），否则保留当前曲目与进度换源 */
+    fun refreshItems() {
+        val ts = CustomLibrary.tracks
+        val uris = ts.map { it.mediaUri() }
+        if (uris == currentUris) return
+        val keepUri = currentUris.getOrNull(player.currentMediaItemIndex)
+        var idx = uris.indexOf(keepUri)
+        if (idx < 0) idx = player.currentMediaItemIndex.coerceIn(0, (uris.size - 1).coerceAtLeast(0))
+        val pos = player.currentPosition
+        val wasPlaying = player.playWhenReady
+        currentUris = uris
+        if (uris.isEmpty()) return
+        player.setMediaItems(ts.map { MediaItem.fromUri(it.mediaUri()) }, idx, pos)
+        player.prepare()
+        player.playWhenReady = wasPlaying
+        consecutiveErrors = 0
+        mainHandler.post {
+            CustomLibrary.tracks.getOrNull(idx)?.let {
+                listener?.onTrackChanged(it, idx, ts.size)
+            }
+        }
     }
 
     fun setVolume(v: Float) {

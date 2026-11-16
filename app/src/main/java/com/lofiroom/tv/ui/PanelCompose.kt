@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -44,13 +45,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 import com.lofiroom.tv.R
-import com.lofiroom.tv.data.Playlist
+import com.lofiroom.tv.data.Track
 
 // #compose-tv-migration P1-P3：面板 Compose 实现。
 // 焦点/点击/遥控+触摸交互交给 Compose 焦点系统（不再手写 panelKey），
 // 视觉沿用 v1.3 设计语言：金色=已应用、米色=光标、20dp 同心圆角、暗色卡片。
 
-enum class PanelTab { TRACKS, BACKGROUNDS }
+enum class PanelTab { TRACKS, BACKGROUNDS, CUSTOM }
 
 private val Gold = Color(0xFFD8B57E)
 private val Cream = Color(0xFFF6F0E6)
@@ -64,6 +65,7 @@ private val CellShape = RoundedCornerShape(20.dp)
 fun LofiPanel(
     tab: PanelTab,
     onTabChange: (PanelTab) -> Unit,
+    tracks: List<Track>,
     playingIndex: Int,
     playing: Boolean,
     onTrackClick: (Int) -> Unit,
@@ -73,6 +75,8 @@ fun LofiPanel(
     onWallClick: (Int) -> Unit,
     autoRotate: Boolean,
     onAutoRotateToggle: () -> Unit,
+    qrBitmap: Bitmap?,
+    serverUrl: String,
     tabsFocus: FocusRequester,
     openTick: Int,
 ) {
@@ -114,6 +118,13 @@ fun LofiPanel(
                     fontFamily = sans,
                     onClick = { onTabChange(PanelTab.BACKGROUNDS) },
                 )
+                Spacer(Modifier.width(22.dp))
+                PanelTabText(
+                    text = stringResource(R.string.panel_title_custom),
+                    selected = tab == PanelTab.CUSTOM,
+                    fontFamily = sans,
+                    onClick = { onTabChange(PanelTab.CUSTOM) },
+                )
             }
 
             Spacer(Modifier.height(16.dp))
@@ -121,6 +132,7 @@ fun LofiPanel(
             Box(Modifier.height(192.dp).fillMaxWidth()) {
                 when (tab) {
                     PanelTab.TRACKS -> TrackList(
+                        tracks = tracks,
                         playingIndex = playingIndex,
                         playing = playing,
                         onTrackClick = onTrackClick,
@@ -137,13 +149,24 @@ fun LofiPanel(
                         onAutoRotateToggle = onAutoRotateToggle,
                         sans = sans,
                     )
+
+                    PanelTab.CUSTOM -> CustomPane(
+                        qrBitmap = qrBitmap,
+                        serverUrl = serverUrl,
+                        sans = sans,
+                        serif = serif,
+                    )
                 }
             }
 
             Spacer(Modifier.height(12.dp))
             Text(
                 text = stringResource(
-                    if (tab == PanelTab.TRACKS) R.string.panel_hint else R.string.panel_hint_bg
+                    when (tab) {
+                        PanelTab.TRACKS -> R.string.panel_hint
+                        PanelTab.BACKGROUNDS -> R.string.panel_hint_bg
+                        PanelTab.CUSTOM -> R.string.panel_hint_custom
+                    }
                 ),
                 color = CreamDim,
                 fontFamily = sans,
@@ -185,17 +208,67 @@ private fun PanelTabText(
     }
 }
 
+/** #23 自定义中心：二维码 + 管理页地址；无局域网时给引导文案 */
+@Composable
+private fun CustomPane(
+    qrBitmap: Bitmap?,
+    serverUrl: String,
+    sans: FontFamily,
+    serif: FontFamily,
+) {
+    Row(
+        modifier = Modifier.fillMaxSize(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (qrBitmap != null) {
+            Image(
+                bitmap = qrBitmap.asImageBitmap(),
+                contentDescription = null,
+                modifier = Modifier
+                    .size(156.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Cream),
+            )
+            Spacer(Modifier.width(20.dp))
+        }
+        Column(verticalArrangement = Arrangement.Center) {
+            Text(
+                text = if (qrBitmap != null) "手机扫码打开管理页" else "请连接局域网",
+                color = Gold,
+                fontFamily = serif,
+                fontSize = 17.sp,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = if (qrBitmap != null) serverUrl else "连接 Wi-Fi 后这里会出现二维码",
+                color = CreamDim,
+                fontFamily = sans,
+                fontSize = 10.sp,
+                letterSpacing = 0.2.sp,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "背景 · 照片上传    音乐 · 上传管理",
+                color = CreamDim,
+                fontFamily = sans,
+                fontSize = 9.sp,
+                letterSpacing = 0.2.sp,
+            )
+        }
+    }
+}
+
 @Composable
 private fun TrackList(
-    playingIndex: Int,
+    tracks: List<Track>,    playingIndex: Int,
     playing: Boolean,
     onTrackClick: (Int) -> Unit,
     serif: FontFamily,
     sans: FontFamily,
 ) {
     LazyColumn(Modifier.fillMaxSize()) {
-        items(Playlist.tracks.size) { i ->
-            val t = Playlist.tracks[i]
+        items(tracks.size) { i ->
+            val t = tracks[i]
             TrackRow(
                 no = "%02d".format(i + 1),
                 title = t.title,

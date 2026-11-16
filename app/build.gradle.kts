@@ -44,6 +44,11 @@ android {
 dependencies {
     implementation("androidx.media3:media3-exoplayer:1.4.1")
 
+    // #23 自定义中心：局域网 H5 管理页。NanoHTTPD 提供内嵌 HTTP 服务（multipart 上传），
+    // zxing core 仅做 QR 编码（BitMatrix 自绘 Bitmap，不引 javase）。JSON 用平台自带 org.json。
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
+    implementation("com.google.zxing:core:3.5.3")
+
     // #compose-tv-migration P0 Compose for TV 工具链。
     // 版本组合守住 minSdk 21：androidx 2025 年中之后的产物普遍抬到 minSdk 23，
     // 故取 Compose 1.8.1（BOM 2025.05.00，minSdk 21）+ tv-material 1.0.1（minSdk 21，要求 Compose ≥1.6.8）

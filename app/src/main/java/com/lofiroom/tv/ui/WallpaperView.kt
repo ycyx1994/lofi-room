@@ -2,7 +2,6 @@ package com.lofiroom.tv.ui
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
@@ -10,6 +9,7 @@ import android.graphics.Paint
 import android.util.AttributeSet
 import android.view.Choreographer
 import android.view.View
+import com.lofiroom.tv.custom.CustomLibrary
 import java.util.concurrent.Executors
 
 /**
@@ -47,6 +47,7 @@ class WallpaperView @JvmOverloads constructor(
     @Volatile
     private var running = true
     private var advancing = false // #1 防重入：解码未回前不再重复触发 advance
+    private var pendingShow = -1 // #24 应用竞态补救：目标暂存，列表同步/溶解收尾后补发
     private var failStreak = 0 // 连续解码失败计数，完整一轮无一成功则退避
     private var frameCount = 0L
 
@@ -75,18 +76,62 @@ class WallpaperView @JvmOverloads constructor(
     val currentIndex: Int get() = index
     val count: Int get() = names.size
 
-    /** #17 壁纸文件名（供面板缩略图解码，与轮播顺序一致） */
+    /** #17 壁纸文件名（供面板缩略图解码，与轮播顺序一致；自定义项带 "custom/" 前缀） */
     fun nameAt(i: Int): String? = names.getOrNull(i)
 
-    /** #14 手动切到指定壁纸（溶解过渡），并重置自动切换计时 */
-    fun show(target: Int) {
-        if (names.isEmpty() || target !in names.indices || advancing || target == index) return
+    /** #23 自定义壁纸增删后重载列表：按文件名保住当前显示，被删则切第一张 */
+    fun reload() {
+        executor.execute {
+            val found = CustomLibrary.wallpaperNames
+            post {
+                if (!running) return@post
+                val curName = names.getOrNull(index)
+                names = found
+                if (found.isEmpty()) return@post
+                val newIndex = curName?.let { found.indexOf(it) } ?: -1
+                if (newIndex >= 0) {
+                    index = newIndex // 位置平移但画面不变，只同步面板金框
+                    onWallpaperChange?.invoke(index, names.size)
+                } else {
+                    show(0, force = true) // 当前图被删：溶解到第一张
+                }
+                replayPending() // #24 列表已同步：补发暂存的应用意图
+            }
+        }
+    }
+
+    /** #14 手动切到指定壁纸（溶解过渡），并重置自动切换计时；force 时允许重画同一张（reload 兜底） */
+    fun show(target: Int, force: Boolean = false) {
+        // #24 应用竞态补救：上传刚落盘时 names 还是旧列表，目标越界不再静默丢弃——暂存后等 reload 补发
+        if (target !in names.indices) {
+            pendingShow = target
+            reload()
+            return
+        }
+        if (advancing) {
+            pendingShow = target // 溶解进行中：本轮收尾 replayPending 补发
+            return
+        }
+        if (!force && target == index) {
+            pendingShow = -1 // 已经是这张：最新意图即取消更早的暂存
+            return
+        }
+        pendingShow = -1 // 成交的 show 是最新意图，作废更早的暂存
         advancing = true
         val targetName = names[target]
         executor.execute {
             val bmp = decode(targetName)
             post {
                 advancing = false
+                // #24 收尾时若已有更新的应用意图，本次结果作废改道（新图未上屏可直接回收）
+                val t = pendingShow
+                if (t == target) pendingShow = -1
+                if (running && t >= 0 && t != target && t in names.indices) {
+                    if (bmp != null && bmp !== current && bmp !== previous) bmp.recycle()
+                    pendingShow = -1
+                    show(t)
+                    return@post
+                }
                 if (!running || bmp == null) return@post
                 // #22 推镜接续：旧图从真实进度续行，新图从旧图此刻缩放出发，消除切换跳变
                 prevBaseP = ((System.currentTimeMillis() - switchAtMs).coerceAtLeast(0L)
@@ -106,10 +151,19 @@ class WallpaperView @JvmOverloads constructor(
         }
     }
 
+    /** #24 补发暂存的应用意图：列表同步后把用户点过的目标切过去 */
+    private fun replayPending() {
+        val t = pendingShow
+        if (t < 0 || t !in names.indices) return // 没有暂存或列表还没到位
+        pendingShow = -1
+        show(t)
+    }
+
     private fun loadList() {
         executor.execute {
             // #9 目录列举与首图解码都放后台线程，避免主线程磁盘 I/O
-            val found = (context.assets.list("wallpapers") ?: emptyArray()).sorted()
+            // #23 走合并库：内置 assets + 自定义 custom/（命名约定见 CustomLibrary）
+            val found = CustomLibrary.wallpaperNames
             // #9 跳过排在前面的坏文件，找到第一张能解码的（从 startIndex 起找，支持记忆的默认图）
             var start = startIndex.coerceIn(0, (found.size - 1).coerceAtLeast(0))
             var bmp: Bitmap? = null
@@ -123,6 +177,7 @@ class WallpaperView @JvmOverloads constructor(
                 if (names.isEmpty()) return@post
                 // #9 无论成败都武装定时器，否则 doFrame 的 switchAtMs>0 守卫会让 advance 永不触发
                 switchAtMs = System.currentTimeMillis()
+                replayPending() // #24 首载完成：补发启动期间暂存的应用意图
                 if (bmp == null) return@post
                 index = start
                 current = bmp
@@ -142,6 +197,14 @@ class WallpaperView @JvmOverloads constructor(
             post {
                 advancing = false // #1 无论成败都复位标志
                 index = next // #9 失败也推进，避免卡在同一个坏文件上
+                // #24 自动轮播收尾时若已有用户应用意图，让位改道（新图未上屏可直接回收）
+                val t = pendingShow
+                if (running && t >= 0 && t in names.indices) {
+                    if (bmp != null && bmp !== current && bmp !== previous) bmp.recycle()
+                    pendingShow = -1
+                    show(t)
+                    return@post
+                }
                 if (!running) return@post
                 if (bmp == null) {
                     failStreak++
@@ -167,20 +230,11 @@ class WallpaperView @JvmOverloads constructor(
         }
     }
 
-    private fun decode(name: String): Bitmap? = try {
-        val path = "wallpapers/$name"
-        // #2 先探边界，按屏幕尺寸算 inSampleSize，避免超大位图常驻内存
-        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        context.assets.open(path).use { BitmapFactory.decodeStream(it, null, opts) }
+    private fun decode(name: String): Bitmap? {
+        // #2 按屏幕尺寸算目标宽，CustomLibrary 负责抽样与自定义图 EXIF 转正
         val dm = context.resources.displayMetrics
         val targetW = (maxOf(dm.widthPixels, dm.heightPixels) * 1.25f).toInt()
-        var sample = 1
-        while (opts.outWidth / (sample * 2) >= targetW) sample *= 2
-        opts.inSampleSize = sample
-        opts.inJustDecodeBounds = false
-        context.assets.open(path).use { BitmapFactory.decodeStream(it, null, opts) }
-    } catch (e: Exception) {
-        null
+        return CustomLibrary.decodeWallpaper(name, targetW)
     }
 
     override fun onDraw(canvas: Canvas) {

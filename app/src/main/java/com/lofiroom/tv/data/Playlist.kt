@@ -1,7 +1,20 @@
 package com.lofiroom.tv.data
 
+import android.net.Uri
+import java.io.File
+
 /** 曲目与诗意文案数据 */
-data class Track(val title: String, val sub: String, val asset: String)
+data class Track(
+    val title: String,
+    val sub: String,
+    val asset: String,
+    /** #23 true 表示 asset 字段是自定义音频绝对路径（filesDir/custom/music/…），false 为内置 assets 路径 */
+    val isCustom: Boolean = false
+)
+
+/** #23 统一取播放 URI：内置走 asset:///，自定义走 file:// */
+fun Track.mediaUri(): String =
+    if (isCustom) Uri.fromFile(File(asset)).toString() else "asset:///" + asset
 
 data class Caption(val label: String, val cn: String, val en: String)
 

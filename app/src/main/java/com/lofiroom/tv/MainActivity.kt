@@ -1,22 +1,28 @@
 package com.lofiroom.tv
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Typeface
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkRequest
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.GestureDetector
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -27,9 +33,12 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.ComposeView
 import com.lofiroom.tv.audio.AudioEngine
 import com.lofiroom.tv.audio.VisualizerTap
+import com.lofiroom.tv.custom.CustomLibrary
 import com.lofiroom.tv.data.Caption
 import com.lofiroom.tv.data.Playlist
 import com.lofiroom.tv.data.Track
+import com.lofiroom.tv.net.LanServer
+import com.lofiroom.tv.net.QrCode
 import com.lofiroom.tv.ui.LofiPanel
 import com.lofiroom.tv.ui.PanelTab
 import com.lofiroom.tv.ui.VisualizerView
@@ -37,6 +46,7 @@ import com.lofiroom.tv.ui.WallpaperView
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 import kotlin.math.abs
 
 class MainActivity : ComponentActivity() {
@@ -70,6 +80,14 @@ class MainActivity : ComponentActivity() {
     private val tabsFocus = FocusRequester()
     private val panelOpenTick = mutableIntStateOf(0)
 
+    // #23 自定义中心：局域网 H5 管理服务 + 二维码态
+    private var lanServer: LanServer? = null
+    private var netCallback: ConnectivityManager.NetworkCallback? = null // #23 网络变化 → 刷新二维码/引导
+    private val qrBitmapState = mutableStateOf<Bitmap?>(null)
+    private val serverUrlState = mutableStateOf("")
+    private val customTracks = mutableStateOf<List<Track>>(emptyList())
+    private var qrOverlay: View? = null // OK 全屏二维码遮罩（CUSTOM 页签）
+
     private lateinit var splash: FrameLayout
     private lateinit var splashLogo: ImageView
 
@@ -80,7 +98,7 @@ class MainActivity : ComponentActivity() {
     private val prefs by lazy { getSharedPreferences("lofi_prefs", MODE_PRIVATE) }
 
     private var captionIndex = 0
-    private var totalTracks = Playlist.tracks.size
+    private var totalTracks = CustomLibrary.tracks.size
     private var lastBackPressedMs = 0L // #3 双击 BACK 退出
     private val fontSerif: Typeface by lazy { loadFont("fonts/CormorantGaramond.ttf", Typeface.SERIF) } // #5
     private val fontSans: Typeface by lazy { loadFont("fonts/Jost.ttf", Typeface.SANS_SERIF) }
@@ -128,6 +146,10 @@ class MainActivity : ComponentActivity() {
         applyFonts()
         startClock()
 
+        // #23 自定义库先于引擎初始化（AudioEngine 构建曲单读 CustomLibrary）
+        CustomLibrary.init(this)
+        customTracksStateSync()
+
         tap = VisualizerTap()
         engine = AudioEngine(this, tap)
         visualizer.tap = tap
@@ -143,7 +165,7 @@ class MainActivity : ComponentActivity() {
                 playingState.value = playing
             }
         }
-        bindTrack(Playlist.tracks[0], 0, totalTracks)
+        bindTrack(CustomLibrary.tracks[0], 0, CustomLibrary.tracks.size)
 
         // #14 记忆自动切换开关（默认关）与选中的壁纸（默认城市夜景）
         wallpaper.autoRotate = prefs.getBoolean("auto_rotate", false)
@@ -164,6 +186,17 @@ class MainActivity : ComponentActivity() {
 
         setupPanel()
         scheduleHintFade()
+
+        // #23 库变更（H5 上传/删除/改名/移动）→ 引擎重建曲单 + 壁纸重载 + 缩略图补温
+        CustomLibrary.onLibraryChanged = {
+            engine.refreshItems()
+            wallpaper.reload()
+            customTracksStateSync()
+            handler.post { warmThumbs() }
+        }
+
+        // #23 局域网管理服务：8788 起，二维码 = http://<ip>:<port>/t/<token>/
+        startLanServer()
 
         // #12 启动遮罩：字标淡入 + 兜底撤除（防止首图解码失败时永久遮挡）
         splashLogo.animate().alpha(1f).setDuration(380).start()
@@ -334,11 +367,128 @@ class MainActivity : ComponentActivity() {
 
     // ── 播放列表面板（Compose）────────────────────────────────
 
+    /** #23 合并曲目快照进 Compose 状态（TrackList 直接读它，不再静态引用 Playlist） */
+    private fun customTracksStateSync() {
+        customTracks.value = CustomLibrary.tracks
+    }
+
+    /** #23 启动局域网 H5 服务并生成二维码；无局域网 IP 时留空，CUSTOM 页签显示引导 */
+    private fun startLanServer() {
+        val token = prefs.getString("lan_token", null) ?: UUID.randomUUID().toString().replace("-", "")
+        prefs.edit().putString("lan_token", token).apply()
+        val server = LanServer(this, lanHost, token)
+        lanServer = server
+        if (!server.start()) return
+        refreshQrState()
+        // #23 网络变化即刷新：断网 → CUSTOM 页签引导；换 IP → 二维码换新地址
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) { handler.post { refreshQrState() } }
+            override fun onLost(network: Network) { handler.post { refreshQrState() } }
+        }
+        netCallback = cb
+        cm.registerNetworkCallback(NetworkRequest.Builder().build(), cb)
+    }
+
+    /** #23 IP/服务变化后重算二维码（网络切换可再调） */
+    private fun refreshQrState() {
+        val server = lanServer ?: return
+        val ip = LanServer.localIpv4()
+        if (ip == null) {
+            serverUrlState.value = ""
+            qrBitmapState.value = null
+            return
+        }
+        val url = server.url(ip)
+        serverUrlState.value = url
+        // zxing 编码很快，但仍放后台避免主线程抖动
+        Thread {
+            val bmp = QrCode.encode(url, 640)
+            handler.post { qrBitmapState.value = bmp }
+        }.start()
+    }
+
+    /** #23 LanServer 主线程桥：状态读 Compose 态，动作切主线程执行 */
+    private val lanHost = object : LanServer.Host {
+        override fun currentPlaying(): Boolean = playingState.value
+        override fun currentTrackIndex(): Int = playingIndexState.intValue
+        override fun currentWallpaperIndex(): Int = appliedWallState.intValue
+        override fun applyWallpaper(index: Int) {
+            runOnUiThread {
+                if (index in 0 until wallpaper.count) {
+                    wallpaper.show(index)
+                    prefs.edit().putInt("wallpaper_index", index).apply()
+                }
+            }
+        }
+
+        override fun playTrack(index: Int) {
+            runOnUiThread {
+                if (index in customTracks.value.indices) engine.playIndex(index)
+            }
+        }
+    }
+
+    /** #23 OK 在 CUSTOM 页签上放大二维码（扫码距离更远），再按 OK/BACK 收起 */
+    private fun toggleQrOverlay() {
+        val content = findViewById<FrameLayout>(android.R.id.content)
+        val current = qrOverlay
+        if (current != null) {
+            content.removeView(current)
+            qrOverlay = null
+            return
+        }
+        val bmp = qrBitmapState.value ?: return
+        val overlay = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(0xF2120E0B.toInt())
+        }
+        overlay.addView(ImageView(this@MainActivity).apply {
+            setImageBitmap(bmp)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+        }, LinearLayout.LayoutParams(dp(420), dp(420)))
+        overlay.addView(TextView(this@MainActivity).apply {
+            text = serverUrlState.value
+            typeface = fontSans
+            setTextColor(0xFFC8BCA9.toInt())
+            textSize = 14f
+            gravity = Gravity.CENTER
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(24) })
+        overlay.addView(TextView(this@MainActivity).apply {
+            text = "扫码打开管理页 · OK/BACK 返回"
+            typeface = fontSans
+            setTextColor(0xFFD8B57E.toInt())
+            textSize = 12f
+            gravity = Gravity.CENTER
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(10) })
+        overlay.isClickable = true
+        overlay.isFocusable = true
+        overlay.setOnClickListener { toggleQrOverlay() }
+        content.addView(
+            overlay,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        qrOverlay = overlay
+    }
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
     private fun setupPanel() {
         panelCompose.setContent {
             LofiPanel(
                 tab = panelTabState.value,
                 onTabChange = { panelTabState.value = it },
+                tracks = customTracks.value,
                 playingIndex = playingIndexState.intValue,
                 playing = playingState.value,
                 onTrackClick = { i ->
@@ -360,6 +510,8 @@ class MainActivity : ComponentActivity() {
                     autoRotateState.value = wallpaper.autoRotate
                     prefs.edit().putBoolean("auto_rotate", wallpaper.autoRotate).apply()
                 },
+                qrBitmap = qrBitmapState.value,
+                serverUrl = serverUrlState.value,
                 tabsFocus = tabsFocus,
                 openTick = panelOpenTick.intValue,
             )
@@ -389,16 +541,8 @@ class MainActivity : ComponentActivity() {
 
     // ── 背景宫格：缩略图 ───────────────────────────────────
 
-    /** #17 小图解码（约 170px 宽，够宫格预览用） */
-    private fun decodeThumb(name: String): Bitmap? = try {
-        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        assets.open("wallpapers/$name").use { BitmapFactory.decodeStream(it, null, opts) }
-        opts.inSampleSize = 8
-        opts.inJustDecodeBounds = false
-        assets.open("wallpapers/$name").use { BitmapFactory.decodeStream(it, null, opts) }
-    } catch (e: Exception) {
-        null
-    }
+    /** #17 小图解码（约 320px 宽，够宫格预览用；#23 经 CustomLibrary 分流内置/自定义） */
+    private fun decodeThumb(name: String): Bitmap? = CustomLibrary.decodeWallpaper(name, 320)
 
     /** #17 预热缩略图缓存（后台解码，完成回填 Compose 状态） */
     private fun warmThumbs() {
@@ -420,6 +564,21 @@ class MainActivity : ComponentActivity() {
 
     /** #compose-tv-migration 面板打开时只拦 BACK/MENU；方向与确认键交给 Compose 焦点系统 */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // #23 全屏二维码遮罩：OK/BACK 收起，其余键吞掉防穿透
+        if (qrOverlay != null) {
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                when (event.keyCode) {
+                    KeyEvent.KEYCODE_BACK,
+                    KeyEvent.KEYCODE_DPAD_CENTER,
+                    KeyEvent.KEYCODE_ENTER,
+                    KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                        toggleQrOverlay()
+                        return true
+                    }
+                }
+            }
+            return true
+        }
         if (panelWrap.visibility == View.VISIBLE && event.action == KeyEvent.ACTION_DOWN) {
             when (event.keyCode) {
                 KeyEvent.KEYCODE_BACK,
@@ -427,6 +586,16 @@ class MainActivity : ComponentActivity() {
                 KeyEvent.KEYCODE_SETTINGS -> {
                     togglePanel()
                     return true
+                }
+
+                // #23 CUSTOM 页签按 OK → 全屏二维码（Tab 切换是焦点漫游，确认键留作放大）
+                KeyEvent.KEYCODE_DPAD_CENTER,
+                KeyEvent.KEYCODE_ENTER,
+                KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                    if (panelTabState.value == PanelTab.CUSTOM) {
+                        toggleQrOverlay()
+                        return true
+                    }
                 }
             }
         }
@@ -504,6 +673,14 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        // #23 先停局域网服务再释放引擎，避免 H5 请求踩到已释放的播放器
+        CustomLibrary.onLibraryChanged = null
+        netCallback?.let {
+            (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).unregisterNetworkCallback(it)
+        }
+        netCallback = null
+        lanServer?.stop()
+        lanServer = null
         super.onDestroy()
         handler.removeCallbacksAndMessages(null)
         wallpaper.stop()

@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lofi Room · 自定义管理</title>
+<style>
+  :root {
+    --gold: #d8b57e;
+    --cream: #f6f0e6;
+    --dim: #c8bca9;
+    --bg: #120e0b;
+    --panel: rgba(18, 14, 11, .92);
+    --stroke: rgba(216, 181, 126, .18);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    background: var(--bg); color: var(--cream);
+    font-family: system-ui, -apple-system, "PingFang SC", "Noto Sans SC", sans-serif;
+    min-height: 100vh; padding-bottom: 40px;
+  }
+  header {
+    position: sticky; top: 0; z-index: 10;
+    background: linear-gradient(rgba(18,14,11,.97), rgba(18,14,11,.88));
+    backdrop-filter: blur(8px); padding: 18px 18px 12px;
+    border-bottom: 1px solid var(--stroke);
+  }
+  h1 { font-family: Georgia, "Songti SC", serif; font-size: 20px; letter-spacing: 2px; color: var(--gold); font-weight: 500; }
+  .now { margin-top: 6px; font-size: 12px; color: var(--dim); line-height: 1.6; }
+  .now b { color: var(--cream); font-weight: 500; }
+  nav { display: flex; gap: 10px; margin-top: 12px; }
+  nav button {
+    flex: 1; padding: 10px 0; border-radius: 12px; border: 1px solid var(--stroke);
+    background: transparent; color: var(--dim); font-size: 14px; letter-spacing: 1px;
+    transition: all .18s;
+  }
+  nav button.on { background: var(--gold); color: var(--bg); border-color: var(--gold); font-weight: 600; }
+  main { padding: 16px 16px 0; }
+  section { display: none; }
+  section.on { display: block; }
+  .bar { display: flex; gap: 10px; margin-bottom: 14px; }
+  .bar label {
+    flex: 1; text-align: center; padding: 13px 0; border-radius: 14px;
+    background: rgba(216,181,126,.12); color: var(--gold); font-size: 14px; letter-spacing: 1px;
+  }
+  .bar label input { display: none; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .cell {
+    position: relative; border-radius: 14px; overflow: hidden; aspect-ratio: 16/9;
+    border: 2px solid transparent; background: #1a1510; transition: border-color .15s;
+  }
+  .cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .cell.applied { border-color: var(--gold); }
+  .cell .name {
+    position: absolute; left: 0; right: 0; bottom: 0; padding: 16px 8px 6px;
+    background: linear-gradient(transparent, rgba(0,0,0,.78));
+    font-size: 11px; color: var(--cream); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .cell .tag {
+    position: absolute; top: 6px; left: 6px; padding: 2px 8px; border-radius: 8px;
+    font-size: 10px; background: var(--gold); color: var(--bg); font-weight: 600;
+  }
+  .cell .del {
+    position: absolute; top: 6px; right: 6px; width: 26px; height: 26px; border-radius: 50%;
+    background: rgba(0,0,0,.55); color: var(--cream); border: 1px solid rgba(255,255,255,.25);
+    font-size: 15px; line-height: 24px; text-align: center;
+  }
+  .track {
+    display: flex; align-items: center; gap: 12px; padding: 13px 14px; margin-bottom: 10px;
+    background: var(--panel); border: 1px solid var(--stroke); border-radius: 14px;
+  }
+  .track.playing { border-color: var(--gold); }
+  .track .no { font-family: Georgia, serif; color: var(--gold); font-size: 15px; width: 26px; }
+  .track .meta { flex: 1; min-width: 0; }
+  .track .meta .t { font-family: Georgia, "Songti SC", serif; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .track .meta .s { font-size: 11px; color: var(--dim); margin-top: 3px; letter-spacing: .5px; }
+  .track .ops { display: flex; gap: 8px; }
+  .track .ops button, .cell .acts button {
+    border: 1px solid var(--stroke); background: transparent; color: var(--dim);
+    border-radius: 10px; padding: 7px 12px; font-size: 12px;
+  }
+  .track .ops button:active { background: var(--gold); color: var(--bg); }
+  .empty { text-align: center; color: var(--dim); font-size: 13px; padding: 30px 0; letter-spacing: 1px; }
+  #progress {
+    position: fixed; left: 16px; right: 16px; bottom: 20px; display: none;
+    background: var(--panel); border: 1px solid var(--gold); border-radius: 14px; padding: 14px 16px; z-index: 20;
+  }
+  #progress .pt { font-size: 13px; color: var(--gold); margin-bottom: 8px; }
+  #progress .track2 { height: 6px; border-radius: 3px; background: rgba(216,181,126,.18); overflow: hidden; }
+  #progress .fill { height: 100%; width: 0; background: var(--gold); border-radius: 3px; transition: width .12s; }
+  #toast {
+    position: fixed; left: 50%; top: 24px; transform: translateX(-50%) translateY(-16px);
+    background: var(--gold); color: var(--bg); padding: 11px 22px; border-radius: 12px;
+    font-size: 13px; font-weight: 600; opacity: 0; pointer-events: none; transition: all .25s; z-index: 30;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.err { background: #c0553e; color: var(--cream); }
+  .rename-box { display: none; gap: 8px; padding: 0 14px 12px; }
+  .rename-box.on { display: flex; }
+  .rename-box input {
+    flex: 1; background: rgba(255,255,255,.07); border: 1px solid var(--stroke); color: var(--cream);
+    border-radius: 10px; padding: 10px 12px; font-size: 13px;
+  }
+  .rename-box button { border: none; background: var(--gold); color: var(--bg); border-radius: 10px; padding: 0 16px; font-size: 13px; font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <h1>LOFI ROOM · 自定义管理</h1>
+  <div class="now" id="now">正在连接电视…</div>
+  <nav>
+    <button id="tab-wall" class="on" onclick="switchTab('wall')">背景 · 照片</button>
+    <button id="tab-music" onclick="switchTab('music')">音乐 · 音频</button>
+  </nav>
+</header>
+
+<main>
+  <section id="sec-wall" class="on">
+    <div class="bar">
+      <label>＋ 上传照片<input type="file" id="wall-file" accept="image/jpeg,image/png,image/webp"></label>
+    </div>
+    <div class="grid" id="wall-grid"></div>
+    <div class="empty" id="wall-empty" style="display:none">还没有背景，点上方上传</div>
+  </section>
+
+  <section id="sec-music">
+    <div class="bar">
+      <label>＋ 上传音频<input type="file" id="track-file" accept="audio/*,.mp3,.m4a,.wav,.aac,.flac,.ogg"></label>
+    </div>
+    <div id="track-list"></div>
+    <div class="empty" id="track-empty" style="display:none">还没有曲目，点上方上传</div>
+  </section>
+</main>
+
+<div id="progress"><div class="pt" id="progress-text">上传中…</div><div class="track2"><div class="fill" id="progress-fill"></div></div></div>
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+let state = {}, wallpapers = [], tracks = [];
+
+function toast(msg, err) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.className = 'show' + (err ? ' err' : '');
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.className = '', 2400);
+}
+
+function switchTab(tab) {
+  $('#tab-wall').classList.toggle('on', tab === 'wall');
+  $('#tab-music').classList.toggle('on', tab === 'music');
+  $('#sec-wall').classList.toggle('on', tab === 'wall');
+  $('#sec-music').classList.toggle('on', tab === 'music');
+}
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+
+function xhrUpload(url, file, fields, onDone) {
+  // #24 文本参数（filename/title/sub）走 URL query：NanoHTTPD 解 multipart 文本字段用 US-ASCII，中文会烂成 '?'
+  const q = new URLSearchParams();
+  q.set('filename', file.name);
+  for (const k in fields) q.set(k, fields[k]);
+  const x = new XMLHttpRequest();
+  x.open('POST', url + '?' + q.toString());
+  x.upload.onprogress = e => {
+    if (e.lengthComputable) $('#progress-fill').style.width = (e.loaded / e.total * 100).toFixed(1) + '%';
+  };
+  x.onload = () => {
+    $('#progress').style.display = 'none';
+    try {
+      const j = JSON.parse(x.responseText);
+      if (x.status >= 400) throw new Error(j.error || ('HTTP ' + x.status));
+      onDone(j);
+    } catch (e) { toast(e.message, true); }
+  };
+  x.onerror = () => { $('#progress').style.display = 'none'; toast('网络错误，上传失败', true); };
+  const fd = new FormData();
+  fd.append('file', file, file.name); // 只带二进制，文本字段在 query（见上）
+  $('#progress-text').textContent = '上传 ' + file.name;
+  $('#progress-fill').style.width = '0';
+  $('#progress').style.display = 'block';
+  x.send(fd);
+}
+
+function renderNow() {
+  $('#now').innerHTML =
+    (state.playing ? '正在播放 <b>' + esc(state.trackTitle) + '</b>' : '已暂停 · <b>' + esc(state.trackTitle) + '</b>') +
+    '<br>当前背景 #' + (state.wallpaperIndex + 1) + ' · 共 ' + tracks.length + ' 首曲目';
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+function renderWalls() {
+  const g = $('#wall-grid');
+  g.innerHTML = wallpapers.map(w => `
+    <div class="cell ${w.id === state.wallpaperIndex ? 'applied' : ''}" onclick="applyWall(${w.id})">
+      <img src="api/thumbs/wall/${w.id}" loading="lazy">
+      ${w.id === state.wallpaperIndex ? '<div class="tag">当前</div>' : ''}
+      ${!w.builtin ? `<div class="del" onclick="event.stopPropagation();delWall(${w.id})">×</div>` : ''}
+      <div class="name">${esc(w.name)}</div>
+    </div>`).join('');
+  $('#wall-empty').style.display = wallpapers.length ? 'none' : 'block';
+}
+
+function renderTracks() {
+  const l = $('#track-list');
+  l.innerHTML = tracks.map((t, i) => `
+    <div class="track ${i === state.trackIndex ? 'playing' : ''}">
+      <div class="no">${String(i + 1).padStart(2, '0')}</div>
+      <div class="meta" onclick="playTrack(${t.id})">
+        <div class="t">${esc(t.title)}</div>
+        <div class="s">${esc(t.sub)}${i === state.trackIndex ? ' · PLAYING' : ''}</div>
+      </div>
+      <div class="ops">
+        ${!t.builtin ? `
+          <button onclick="moveTrack(${t.id},-1)">↑</button>
+          <button onclick="moveTrack(${t.id},1)">↓</button>
+          <button onclick="toggleRename(${t.id})">改名</button>
+          <button onclick="delTrack(${t.id})">删</button>` : `<button onclick="playTrack(${t.id})">播放</button>`}
+      </div>
+    </div>
+    ${!t.builtin ? `
+    <div class="rename-box" id="rn-${t.id}">
+      <input id="rn-t-${t.id}" value="${esc(t.title)}" placeholder="标题">
+      <input id="rn-s-${t.id}" value="${esc(t.sub)}" placeholder="副标题（曲风 · 作者）">
+      <button onclick="renameTrack(${t.id})">保存</button>
+    </div>` : ''}`).join('');
+  $('#track-empty').style.display = tracks.length ? 'none' : 'block';
+}
+
+async function refresh() {
+  try {
+    const [s, w, t] = await Promise.all([
+      api('api/state'), api('api/wallpapers'), api('api/tracks'),
+    ]);
+    state = s; wallpapers = w.wallpapers; tracks = t.tracks;
+    renderNow(); renderWalls(); renderTracks();
+  } catch (e) {
+    $('#now').textContent = '连接失败：' + e.message;
+  }
+}
+
+async function applyWall(id) {
+  try { await api('api/wallpapers/' + id + '/apply', { method: 'POST' }); toast('背景已应用'); refresh(); }
+  catch (e) { toast(e.message, true); }
+}
+
+async function delWall(id) {
+  if (!confirm('删除这张自定义背景？')) return;
+  try { await api('api/wallpapers/' + id, { method: 'DELETE' }); toast('已删除'); refresh(); }
+  catch (e) { toast(e.message, true); }
+}
+
+async function playTrack(id) {
+  try { await api('api/tracks/' + id + '/play', { method: 'POST' }); toast('开始播放'); refresh(); }
+  catch (e) { toast(e.message, true); }
+}
+
+async function moveTrack(id, dir) {
+  try { await api('api/tracks/' + id + '/move?dir=' + dir, { method: 'POST' }); refresh(); }
+  catch (e) { toast(e.message, true); }
+}
+
+function toggleRename(id) {
+  const box = $('#rn-' + id);
+  box.classList.toggle('on');
+}
+
+async function renameTrack(id) {
+  const title = $('#rn-t-' + id).value.trim();
+  const sub = $('#rn-s-' + id).value.trim();
+  try {
+    await api('api/tracks/' + id + '?title=' + encodeURIComponent(title) + '&sub=' + encodeURIComponent(sub), { method: 'PATCH' });
+    toast('已改名'); refresh();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function delTrack(id) {
+  if (!confirm('删除这首自定义曲目？')) return;
+  try { await api('api/tracks/' + id, { method: 'DELETE' }); toast('已删除'); refresh(); }
+  catch (e) { toast(e.message, true); }
+}
+
+$('#wall-file').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (f) xhrUpload('api/wallpapers', f, {}, () => { toast('背景已上传'); refresh(); });
+  e.target.value = '';
+});
+
+$('#track-file').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (f) xhrUpload('api/tracks', f, {
+    title: f.name.replace(/\.[^.]+$/, ''),
+    sub: 'MY MUSIC · 自定义',
+  }, () => { toast('音频已上传'); refresh(); });
+  e.target.value = '';
+});
+
+refresh();
+setInterval(() => api('api/state').then(s => {
+  state = s; renderNow(); renderTracks();
+}).catch(() => {}), 5000);
+</script>
+</body>
+</html>
