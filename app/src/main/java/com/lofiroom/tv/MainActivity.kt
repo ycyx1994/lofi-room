@@ -84,6 +84,7 @@ class MainActivity : ComponentActivity() {
     private var lastBackPressedMs = 0L // #3 双击 BACK 退出
     private val fontSerif: Typeface by lazy { loadFont("fonts/CormorantGaramond.ttf", Typeface.SERIF) } // #5
     private val fontSans: Typeface by lazy { loadFont("fonts/Jost.ttf", Typeface.SANS_SERIF) }
+    private val hintFadeAction = Runnable { fadeOut(hint) }
 
     // #11 触摸手势（翻页式）：轻点=播放/暂停，左右滑=下/上一首，上下滑=音量，长按=面板
     private val gestureDetector by lazy {
@@ -120,7 +121,7 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("ClickableViewAccessibility") // 手势由 GestureDetector 处理，无需 performClick
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        configureWindow()
         setContentView(R.layout.activity_main)
         hideSystemBars()
         bindViews()
@@ -162,7 +163,7 @@ class MainActivity : ComponentActivity() {
         rotateCaption(0)
 
         setupPanel()
-        handler.postDelayed({ fadeOut(hint) }, 9000)
+        scheduleHintFade()
 
         // #12 启动遮罩：字标淡入 + 兜底撤除（防止首图解码失败时永久遮挡）
         splashLogo.animate().alpha(1f).setDuration(380).start()
@@ -203,12 +204,41 @@ class MainActivity : ComponentActivity() {
         clock.typeface = fontSans
         hint.typeface = fontSans
         volOsd.typeface = fontSans
+        fixVolOsdWidth()
+    }
+
+    /** 音量 OSD 固定宽度：取全部可能文案（VOL 0%..100%）中最宽的真实测量宽，
+     *  消除调节音量时盒子宽度变化带来的轻微抖动（文字左锚定后起始位置恒定） */
+    private fun fixVolOsdWidth() {
+        val spec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        val widest = (0..100).maxOf { pct ->
+            volOsd.text = String.format(Locale.ENGLISH, "VOL %d%%", pct)
+            volOsd.measure(spec, spec)
+            volOsd.measuredWidth
+        }
+        volOsd.layoutParams = volOsd.layoutParams.apply { width = widest }
+        volOsd.text = ""
     }
 
     private fun loadFont(path: String, fallback: Typeface): Typeface = try {
         Typeface.createFromAsset(assets, path)
     } catch (e: Exception) {
         fallback
+    }
+
+    /** 全屏绘制到刘海/状态栏安全区，避免手机横屏左侧出现系统黑边。 */
+    private fun configureWindow() {
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        if (Build.VERSION.SDK_INT >= 27) {
+            val attrs = window.attributes
+            attrs.layoutInDisplayCutoutMode =
+                if (Build.VERSION.SDK_INT >= 30) {
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                } else {
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
+            window.attributes = attrs
+        }
     }
 
     private fun hideSystemBars() {
@@ -265,6 +295,17 @@ class MainActivity : ComponentActivity() {
 
     private fun fadeOut(view: View) {
         view.animate().alpha(0f).setDuration(900).start()
+    }
+
+    private fun showHintNow() {
+        handler.removeCallbacks(hintFadeAction)
+        hint.animate().cancel()
+        hint.alpha = 1f
+    }
+
+    private fun scheduleHintFade(delayMs: Long = 3000) {
+        handler.removeCallbacks(hintFadeAction)
+        handler.postDelayed(hintFadeAction, delayMs)
     }
 
     /** #12 启动遮罩淡出：字标随遮罩一起退场，露出壁纸场景 */
@@ -330,6 +371,8 @@ class MainActivity : ComponentActivity() {
     private fun togglePanel() {
         if (panelWrap.visibility == View.VISIBLE) {
             panelWrap.visibility = View.GONE
+            showHintNow()
+            scheduleHintFade()
         } else {
             panelWrap.visibility = View.VISIBLE
             panelOpenTick.intValue++ // Compose 侧 LaunchedEffect 先请求一次页签焦点
@@ -340,8 +383,7 @@ class MainActivity : ComponentActivity() {
                     tabsFocus.requestFocus()
                 }
             }
-            hint.alpha = 1f
-            fadeOut(hint)
+            showHintNow()
         }
     }
 
@@ -457,6 +499,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        configureWindow()
         hideSystemBars()
     }
 

@@ -168,7 +168,7 @@
         android:textColor="#8CF6F0E6"
         android:textSize="10sp" />
 
-    <!-- 音量 OSD -->
+    <!-- 音量 OSD：宽度由 MainActivity.fixVolOsdWidth() 按最宽文案（VOL 100%）定宽，避免调音量时抖动 -->
     <TextView
         android:id="@+id/vol_osd"
         android:layout_width="wrap_content"
