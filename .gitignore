@@ -17,3 +17,6 @@ vendor/
 
 # MiMoCode 会话状态
 .mimocode/
+
+# 构建产物 APK
+*.apk
