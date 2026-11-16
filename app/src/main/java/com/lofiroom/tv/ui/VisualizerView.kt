@@ -72,7 +72,7 @@ class VisualizerView @JvmOverloads constructor(
         canvas.drawLine(0f, cy, w, cy, linePaint)
 
         val n = levels.size
-        val gap = dp(2.2f)
+        val gap = dp(2.8f)
         val barW = ((w - gap * (n - 1)) / n).coerceAtLeast(dp(1.2f))
         val maxAmp = h / 2f - dp(2f)
         val breathe = 0.018f + 0.012f * sin(t * 1.1f).toFloat()
