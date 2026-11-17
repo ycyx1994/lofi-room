@@ -77,6 +77,10 @@ fun LofiPanel(
     onAutoRotateToggle: () -> Unit,
     qrBitmap: Bitmap?,
     serverUrl: String,
+    updateActionLabel: String,
+    updateStatus: String,
+    onUpdateAction: () -> Unit,
+    onUpdateFocusChange: (Boolean) -> Unit,
     tabsFocus: FocusRequester,
     openTick: Int,
 ) {
@@ -153,6 +157,10 @@ fun LofiPanel(
                     PanelTab.CUSTOM -> CustomPane(
                         qrBitmap = qrBitmap,
                         serverUrl = serverUrl,
+                        updateActionLabel = updateActionLabel,
+                        updateStatus = updateStatus,
+                        onUpdateAction = onUpdateAction,
+                        onUpdateFocusChange = onUpdateFocusChange,
                         sans = sans,
                         serif = serif,
                     )
@@ -213,6 +221,10 @@ private fun PanelTabText(
 private fun CustomPane(
     qrBitmap: Bitmap?,
     serverUrl: String,
+    updateActionLabel: String,
+    updateStatus: String,
+    onUpdateAction: () -> Unit,
+    onUpdateFocusChange: (Boolean) -> Unit,
     sans: FontFamily,
     serif: FontFamily,
 ) {
@@ -254,6 +266,40 @@ private fun CustomPane(
                 fontSize = 9.sp,
                 letterSpacing = 0.2.sp,
             )
+
+            // 应用内更新：检查/下载按钮 + 状态行（焦点态上报，CUSTOM 页签 OK 不再一律放大二维码）
+            Spacer(Modifier.height(10.dp))
+            var updateFocused by remember { mutableStateOf(false) }
+            Box(
+                modifier = Modifier
+                    .onFocusChanged {
+                        updateFocused = it.isFocused
+                        onUpdateFocusChange(it.isFocused)
+                    }
+                    .clickable(onClick = onUpdateAction)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(if (updateFocused) Gold.copy(alpha = 0.16f) else Color.Transparent)
+                    .border(1.dp, if (updateFocused) Gold else PanelStroke, RoundedCornerShape(12.dp))
+                    .padding(horizontal = 14.dp, vertical = 8.dp)
+            ) {
+                Text(
+                    text = updateActionLabel,
+                    color = if (updateFocused) Gold else Cream,
+                    fontFamily = sans,
+                    fontSize = 11.sp,
+                    letterSpacing = 0.2.sp,
+                )
+            }
+            if (updateStatus.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = updateStatus,
+                    color = CreamDim,
+                    fontFamily = sans,
+                    fontSize = 9.sp,
+                    letterSpacing = 0.2.sp,
+                )
+            }
         }
     }
 }

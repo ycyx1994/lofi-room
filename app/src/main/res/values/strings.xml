@@ -18,4 +18,17 @@
     <string name="custom_manage_hint">背景 · 照片上传&#160;&#160;&#160;&#160;音乐 · 上传管理</string>
     <string name="qr_overlay_hint">扫码打开管理页 · OK/BACK 返回</string>
     <string name="exit_toast">再按一次返回键退出</string>
+
+    <!-- 应用内更新（GitHub Releases 源） -->
+    <string name="update_check">检查更新</string>
+    <string name="update_checking">检查中…</string>
+    <string name="update_none">当前 v%1$s 已是最新</string>
+    <string name="update_found">发现新版 v%1$s · OK 下载</string>
+    <string name="update_download">下载 v%1$s</string>
+    <string name="update_downloading">下载中 %1$d%%</string>
+    <string name="update_check_failed">检查失败 · 网络不可用</string>
+    <string name="update_download_failed">下载失败 · 请重试</string>
+    <string name="update_sig_mismatch">签名不一致 · 请手动覆盖安装</string>
+    <string name="update_installing">下载完成 · 唤起安装器</string>
+    <string name="update_install_failed">唤起安装失败 · 请手动安装</string>
 </resources>

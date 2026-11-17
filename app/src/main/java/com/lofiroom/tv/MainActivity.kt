@@ -2,6 +2,7 @@ package com.lofiroom.tv
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Typeface
 import android.net.ConnectivityManager
@@ -31,6 +32,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.ComposeView
+import androidx.core.content.FileProvider
 import com.lofiroom.tv.audio.AudioEngine
 import com.lofiroom.tv.audio.VisualizerTap
 import com.lofiroom.tv.custom.CustomLibrary
@@ -39,10 +41,13 @@ import com.lofiroom.tv.data.Playlist
 import com.lofiroom.tv.data.Track
 import com.lofiroom.tv.net.LanServer
 import com.lofiroom.tv.net.QrCode
+import com.lofiroom.tv.net.ReleaseInfo
+import com.lofiroom.tv.net.UpdateChecker
 import com.lofiroom.tv.ui.LofiPanel
 import com.lofiroom.tv.ui.PanelTab
 import com.lofiroom.tv.ui.VisualizerView
 import com.lofiroom.tv.ui.WallpaperView
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -86,6 +91,13 @@ class MainActivity : ComponentActivity() {
     private val qrBitmapState = mutableStateOf<Bitmap?>(null)
     private val serverUrlState = mutableStateOf("")
     private val customTracks = mutableStateOf<List<Track>>(emptyList())
+
+    // ── 应用内更新（GitHub Releases 源） ───────────────────
+    private val updateLabelState = mutableStateOf("")   // 按钮文案：检查更新 / 下载 vX.Y / 下载中 N%
+    private val updateStatusState = mutableStateOf("")  // 状态行：已是最新 / 发现新版 / 失败原因
+    private val updateBtnFocusState = mutableStateOf(false) // 按钮焦点态：CUSTOM 页签 OK 键让位
+    private var latestRelease: ReleaseInfo? = null      // 有新版时非空（按钮切为"下载"）
+    private var updateDownloading = false               // 防重复下载
     private var qrOverlay: View? = null // OK 全屏二维码遮罩（CUSTOM 页签）
 
     private lateinit var splash: FrameLayout
@@ -195,6 +207,9 @@ class MainActivity : ComponentActivity() {
 
         // #23 局域网管理服务：8788 起，二维码 = http://<ip>:<port>/t/<token>/
         startLanServer()
+
+        // 应用内更新：启动静默检查（有新版时按钮/状态行提示，无新版不打扰）
+        checkUpdate(manual = false)
 
         // #12 启动遮罩：字标淡入 + 兜底撤除（防止首图解码失败时永久遮挡）
         splashLogo.animate().alpha(1f).setDuration(380).start()
@@ -520,6 +535,10 @@ class MainActivity : ComponentActivity() {
                 },
                 qrBitmap = qrBitmapState.value,
                 serverUrl = serverUrlState.value,
+                updateActionLabel = updateLabelState.value.ifEmpty { getString(R.string.update_check) },
+                updateStatus = updateStatusState.value,
+                onUpdateAction = { onUpdateAction() },
+                onUpdateFocusChange = { updateBtnFocusState.value = it },
                 tabsFocus = tabsFocus,
                 openTick = panelOpenTick.intValue,
             )
@@ -573,6 +592,87 @@ class MainActivity : ComponentActivity() {
 
     // ── 遥控器 / 按键交互 ────────────────────────────────────
 
+    // ── 应用内更新（GitHub Releases → 下载 APK → 签名校验 → 唤起安装） ─────────
+
+    /** 按钮动作：已有新版→下载；否则→检查 */
+    private fun onUpdateAction() {
+        val rel = latestRelease
+        if (rel != null) downloadUpdate(rel) else checkUpdate(manual = true)
+    }
+
+    /** 后台拉 GitHub Releases 最新版比较；manual=true 时把结果（含失败）反馈到状态行 */
+    private fun checkUpdate(manual: Boolean) {
+        if (updateDownloading) return
+        if (manual) updateLabelState.value = getString(R.string.update_checking)
+        Thread {
+            val cur = packageManager.getPackageInfo(packageName, 0).versionName ?: "0"
+            val rel = UpdateChecker.fetchLatest()
+            handler.post {
+                if (rel == null) {
+                    if (manual) {
+                        updateLabelState.value = getString(R.string.update_check)
+                        updateStatusState.value = getString(R.string.update_check_failed)
+                    }
+                    return@post
+                }
+                if (UpdateChecker.hasUpdate(cur, rel.versionName)) {
+                    latestRelease = rel
+                    updateLabelState.value = getString(R.string.update_download, rel.versionName)
+                    updateStatusState.value = getString(R.string.update_found, rel.versionName)
+                } else {
+                    latestRelease = null
+                    updateLabelState.value = getString(R.string.update_check)
+                    if (manual) updateStatusState.value = getString(R.string.update_none, cur)
+                }
+            }
+        }.start()
+    }
+
+    /** 下载 APK 到应用私有目录，进度回按钮；完成后校验签名再唤起系统安装器 */
+    private fun downloadUpdate(rel: ReleaseInfo) {
+        if (updateDownloading) return
+        updateDownloading = true
+        Thread {
+            val dir = getExternalFilesDir(null) ?: filesDir
+            val apk = File(dir, "update-${rel.versionName}.apk")
+            val ok = UpdateChecker.download(rel.apkUrl, apk) { pct ->
+                handler.post { updateLabelState.value = getString(R.string.update_downloading, pct) }
+            }
+            handler.post {
+                updateDownloading = false
+                if (!ok) {
+                    updateLabelState.value = getString(R.string.update_download, rel.versionName)
+                    updateStatusState.value = getString(R.string.update_download_failed)
+                    return@post
+                }
+                if (!UpdateChecker.signatureMatches(this, apk)) {
+                    // 调试签名装机点更新会走到这：给明确提示，不弹必然失败的安装器
+                    latestRelease = null
+                    updateLabelState.value = getString(R.string.update_check)
+                    updateStatusState.value = getString(R.string.update_sig_mismatch)
+                    return@post
+                }
+                updateLabelState.value = getString(R.string.update_check)
+                updateStatusState.value = getString(R.string.update_installing)
+                installApk(apk)
+            }
+        }.start()
+    }
+
+    /** FileProvider 供安装器读 APK（Android 7+ 禁 file:// 直传） */
+    private fun installApk(apk: File) {
+        try {
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apk)
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            updateStatusState.value = getString(R.string.update_install_failed)
+        }
+    }
+
     /** #compose-tv-migration 面板打开时只拦 BACK/MENU；方向与确认键交给 Compose 焦点系统 */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         // #23 全屏二维码遮罩：OK/BACK 收起，其余键吞掉防穿透
@@ -600,11 +700,12 @@ class MainActivity : ComponentActivity() {
                 }
 
                 // #23 CUSTOM 页签按 OK → 全屏二维码（Tab 切换是焦点漫游，确认键留作放大）；
-                // QR 未就绪时不吞键，放行给 Compose 焦点系统
+                // QR 未就绪时不吞键，放行给 Compose 焦点系统；
+                // 「检查更新」按钮持焦时 OK 让位给按钮点击，不切二维码
                 KeyEvent.KEYCODE_DPAD_CENTER,
                 KeyEvent.KEYCODE_ENTER,
                 KeyEvent.KEYCODE_NUMPAD_ENTER -> {
-                    if (panelTabState.value == PanelTab.CUSTOM && toggleQrOverlay()) {
+                    if (panelTabState.value == PanelTab.CUSTOM && !updateBtnFocusState.value && toggleQrOverlay()) {
                         return true
                     }
                 }

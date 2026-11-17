@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 应用内更新：APK 下载目录（getExternalFilesDir / filesDir 兜底） -->
+<paths>
+    <external-files-path name="updates_ext" path="." />
+    <files-path name="updates_int" path="." />
+</paths>
