@@ -13,6 +13,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.File
+import java.io.FilterInputStream
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.text.SimpleDateFormat
@@ -38,6 +39,9 @@ class LanServer(
         fun currentWallpaperIndex(): Int
         fun applyWallpaper(index: Int)
         fun playTrack(index: Int)
+
+        /** 有人扫码打开了 H5 管理页（index.html 被请求），UI 侧收起菜单/遮罩便于预览 */
+        fun onManagerOpened()
     }
 
     var port = 0
@@ -88,7 +92,10 @@ class LanServer(
         val method = session.method
 
         if (method == Method.OPTIONS) return corsPreflight()
-        if (path.isEmpty() && method == Method.GET) return indexHtml()
+        if (path.isEmpty() && method == Method.GET) {
+            host.onManagerOpened() // 扫码进入管理页 → 通知 UI 收起菜单/二维码遮罩
+            return indexHtml()
+        }
 
         val seg = path.split('/')
         // api/thumbs/wall/{id}
@@ -222,6 +229,7 @@ class LanServer(
         }
         // 大音乐包优先走外部缓存（共享存储），避免挤爆内部 cache
         val tmpDir = context.externalCacheDir ?: context.cacheDir
+        sweepStaleExports(tmpDir) // 兜底：下载中断时 close 不触发，清掉超过 1 小时的残留包
         val tmp = File.createTempFile("lofiroom-export", ".zip", tmpDir)
         try {
             tmp.outputStream().use { CustomLibrary.exportZip(it, part) }
@@ -233,10 +241,27 @@ class LanServer(
         val label = when (part) {
             "wall" -> "lofiroom-wallpapers"; "music" -> "lofiroom-music"; else -> "lofiroom-backup"
         }
-        val r = NanoHTTPD.newFixedLengthResponse(Status.OK, "application/zip", tmp.inputStream(), tmp.length())
+        // 响应流关闭（下载完成/中断）即删临时包，避免 cache 无限堆积
+        val body = object : FilterInputStream(tmp.inputStream()) {
+            override fun close() {
+                super.close()
+                tmp.delete()
+            }
+        }
+        val r = NanoHTTPD.newFixedLengthResponse(Status.OK, "application/zip", body, tmp.length())
         r.addHeader("Content-Disposition", "attachment; filename=\"$label-$stamp.zip\"")
         r.addHeader("Cache-Control", "no-store")
         return r
+    }
+
+    /** 清理超过 1 小时的残留导出临时包（下载中断等场景流关闭未走到） */
+    private fun sweepStaleExports(dir: File) {
+        val cutoff = System.currentTimeMillis() - 60 * 60 * 1000L
+        dir.listFiles()?.forEach { f ->
+            if (f.isFile && f.name.startsWith("lofiroom-export") && f.name.endsWith(".zip") && f.lastModified() < cutoff) {
+                f.delete()
+            }
+        }
     }
 
     /** 导入备份：手机上传 zip → 校验 → 恢复。mode: replace 覆盖恢复（默认）/ merge 合并导入 */
@@ -280,8 +305,10 @@ class LanServer(
         BitmapFactory.decodeFile(tmp.absolutePath, opts)
         if (opts.outWidth <= 0 || opts.outHeight <= 0) return bad("图片无法解析")
         val index = CustomLibrary.addWallpaper(tmp, origName)
-        return if (index >= 0) json(JSONObject().put("ok", true).put("id", index))
-        else storageFull()
+        return if (index >= 0) {
+            host.applyWallpaper(index) // 上传成功即切换到刚上传的图（TV 立即展示，H5 高亮同步跟上）
+            json(JSONObject().put("ok", true).put("id", index))
+        } else storageFull()
     }
 
     private fun uploadTrack(session: IHTTPSession): Response {

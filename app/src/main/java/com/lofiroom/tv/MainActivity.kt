@@ -98,7 +98,6 @@ class MainActivity : ComponentActivity() {
     private val prefs by lazy { getSharedPreferences("lofi_prefs", MODE_PRIVATE) }
 
     private var captionIndex = 0
-    private var totalTracks = CustomLibrary.tracks.size
     private var lastBackPressedMs = 0L // #3 双击 BACK 退出
     private val fontSerif: Typeface by lazy { loadFont("fonts/CormorantGaramond.ttf", Typeface.SERIF) } // #5
     private val fontSans: Typeface by lazy { loadFont("fonts/Jost.ttf", Typeface.SANS_SERIF) }
@@ -155,7 +154,6 @@ class MainActivity : ComponentActivity() {
         visualizer.tap = tap
         engine.listener = object : AudioEngine.Listener {
             override fun onTrackChanged(track: Track, index: Int, total: Int) {
-                totalTracks = total
                 bindTrack(track, index, total)
                 playingIndexState.intValue = index
             }
@@ -414,12 +412,12 @@ class MainActivity : ComponentActivity() {
         override fun currentTrackIndex(): Int = playingIndexState.intValue
         override fun currentWallpaperIndex(): Int = appliedWallState.intValue
         override fun applyWallpaper(index: Int) {
-            runOnUiThread {
-                if (index in 0 until wallpaper.count) {
-                    wallpaper.show(index)
-                    prefs.edit().putInt("wallpaper_index", index).apply()
-                }
-            }
+            // H5 高亮修复：应用意图先同步落状态/偏好——H5 apply 返回后立即读 state 就是新图，
+            // 无需等异步解码回调（原先回调才更新 → 刷新读到旧值 → 高亮要点两次）
+            appliedWallState.intValue = index
+            prefs.edit().putInt("wallpaper_index", index).apply()
+            // 越界目标不再静默丢弃：交给 WallpaperView #24 暂存补发（刚上传的图名单未同步）
+            runOnUiThread { wallpaper.show(index) }
         }
 
         override fun playTrack(index: Int) {
@@ -427,18 +425,26 @@ class MainActivity : ComponentActivity() {
                 if (index in customTracks.value.indices) engine.playIndex(index)
             }
         }
+
+        override fun onManagerOpened() {
+            // 扫码进入管理页：自动收起二维码遮罩与面板，露出全屏背景，手机操控时即时预览效果
+            runOnUiThread {
+                if (qrOverlay != null) toggleQrOverlay()
+                if (panelWrap.visibility == View.VISIBLE) togglePanel()
+            }
+        }
     }
 
-    /** #23 OK 在 CUSTOM 页签上放大二维码（扫码距离更远），再按 OK/BACK 收起 */
-    private fun toggleQrOverlay() {
+    /** #23 OK 在 CUSTOM 页签上放大二维码（扫码距离更远），再按 OK/BACK 收起；返回是否实际发生了切换 */
+    private fun toggleQrOverlay(): Boolean {
         val content = findViewById<FrameLayout>(android.R.id.content)
         val current = qrOverlay
         if (current != null) {
             content.removeView(current)
             qrOverlay = null
-            return
+            return true
         }
-        val bmp = qrBitmapState.value ?: return
+        val bmp = qrBitmapState.value ?: return false // QR 未就绪：没得可切，消费交给上层决定
         val overlay = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -459,7 +465,7 @@ class MainActivity : ComponentActivity() {
             LinearLayout.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(24) })
         overlay.addView(TextView(this@MainActivity).apply {
-            text = "扫码打开管理页 · OK/BACK 返回"
+            text = getString(R.string.qr_overlay_hint)
             typeface = fontSans
             setTextColor(0xFFD8B57E.toInt())
             textSize = 12f
@@ -479,6 +485,7 @@ class MainActivity : ComponentActivity() {
             )
         )
         qrOverlay = overlay
+        return true
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
@@ -500,6 +507,7 @@ class MainActivity : ComponentActivity() {
                 appliedIndex = appliedWallState.intValue,
                 onWallClick = { i ->
                     if (i in 0 until wallpaper.count) {
+                        appliedWallState.intValue = i // 乐观置位：金框立即跟随点击，解码落定后回调校正
                         wallpaper.show(i)
                         prefs.edit().putInt("wallpaper_index", i).apply()
                     }
@@ -591,12 +599,12 @@ class MainActivity : ComponentActivity() {
                     return true
                 }
 
-                // #23 CUSTOM 页签按 OK → 全屏二维码（Tab 切换是焦点漫游，确认键留作放大）
+                // #23 CUSTOM 页签按 OK → 全屏二维码（Tab 切换是焦点漫游，确认键留作放大）；
+                // QR 未就绪时不吞键，放行给 Compose 焦点系统
                 KeyEvent.KEYCODE_DPAD_CENTER,
                 KeyEvent.KEYCODE_ENTER,
                 KeyEvent.KEYCODE_NUMPAD_ENTER -> {
-                    if (panelTabState.value == PanelTab.CUSTOM) {
-                        toggleQrOverlay()
+                    if (panelTabState.value == PanelTab.CUSTOM && toggleQrOverlay()) {
                         return true
                     }
                 }
@@ -647,7 +655,7 @@ class MainActivity : ComponentActivity() {
                     finish()
                 } else {
                     lastBackPressedMs = now
-                    Toast.makeText(this, "再按一次返回键退出", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, getString(R.string.exit_toast), Toast.LENGTH_SHORT).show()
                 }
                 true
             }

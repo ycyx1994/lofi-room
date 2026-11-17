@@ -154,8 +154,8 @@ class WallpaperView @JvmOverloads constructor(
     /** #24 补发暂存的应用意图：列表同步后把用户点过的目标切过去 */
     private fun replayPending() {
         val t = pendingShow
+        pendingShow = -1 // 无论成败都清空：目标仍不在列表（已删除/非法）即作废，防旧意图在后续 reload 时误切
         if (t < 0 || t !in names.indices) return // 没有暂存或列表还没到位
-        pendingShow = -1
         show(t)
     }
 

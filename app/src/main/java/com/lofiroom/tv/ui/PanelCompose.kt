@@ -233,14 +233,14 @@ private fun CustomPane(
         }
         Column(verticalArrangement = Arrangement.Center) {
             Text(
-                text = if (qrBitmap != null) "手机扫码打开管理页" else "请连接局域网",
+                text = if (qrBitmap != null) stringResource(R.string.custom_qr_title) else stringResource(R.string.custom_no_lan),
                 color = Gold,
                 fontFamily = serif,
                 fontSize = 17.sp,
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                text = if (qrBitmap != null) serverUrl else "连接 Wi-Fi 后这里会出现二维码",
+                text = if (qrBitmap != null) serverUrl else stringResource(R.string.custom_no_qr),
                 color = CreamDim,
                 fontFamily = sans,
                 fontSize = 10.sp,
@@ -248,7 +248,7 @@ private fun CustomPane(
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                text = "背景 · 照片上传    音乐 · 上传管理",
+                text = stringResource(R.string.custom_manage_hint),
                 color = CreamDim,
                 fontFamily = sans,
                 fontSize = 9.sp,
