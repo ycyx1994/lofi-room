@@ -1,8 +1,17 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+// 正式签名：keystore/lofiroom-release.jks + keystore.properties（各机器拷贝同一份，保证签名一致）
+val keystoreProps = Properties().apply {
+    val f = rootProject.file("keystore.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+val releaseStoreFile = rootProject.file(keystoreProps.getProperty("storeFile", "keystore/lofiroom-release.jks"))
 
 android {
     namespace = "com.lofiroom.tv"
@@ -16,10 +25,22 @@ android {
         versionName = "1.6"
     }
 
+    signingConfigs {
+        if (releaseStoreFile.exists()) {
+            create("lofiroom") {
+                storeFile = releaseStoreFile
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias", "lofiroom")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug") // 占位签名便于侧载，发布前换正式密钥
+            // 优先正式密钥；缺 keystore 的机器回退 debug 占位（签名与正式包不兼容，仅限本机自测）
+            signingConfig = signingConfigs.findByName("lofiroom") ?: signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

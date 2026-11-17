@@ -24,3 +24,7 @@ vendor/
 # 电视数据备份（用户照片/音乐，勿入库）
 lofiroom-backup-*/
 lofiroom-backup-*.zip
+
+# release 签名密钥与口令（勿入库，换机器时手动拷贝 keystore/ 和 keystore.properties）
+keystore.properties
+keystore/

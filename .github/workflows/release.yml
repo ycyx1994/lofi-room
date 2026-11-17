@@ -1,0 +1,56 @@
+name: Release 构建
+
+on:
+  workflow_dispatch:        # 手动出包：Actions 页面点 Run workflow
+  push:
+    tags: ["v*"]            # 推 v* 标签自动出包并挂到 GitHub Release
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: 恢复签名密钥（仓库 Secrets 注入，任何机器出包签名一致）
+        run: |
+          mkdir -p keystore
+          echo "${{ secrets.LOFIROOM_KEYSTORE_BASE64 }}" | base64 -d > keystore/lofiroom-release.jks
+          cat > keystore.properties <<EOF
+          storeFile=keystore/lofiroom-release.jks
+          storePassword=${{ secrets.LOFIROOM_KEYSTORE_PASSWORD }}
+          keyAlias=lofiroom
+          keyPassword=${{ secrets.LOFIROOM_KEY_PASSWORD }}
+          EOF
+
+      - name: 构建 release 包
+        run: ./gradlew :app:assembleRelease
+
+      - name: 打印签名指纹（应为 9F:99:D5:23:…:BC:72:69）
+        run: keytool -printcert -jarfile app/build/outputs/apk/release/app-release.apk | grep -E "SHA256|Owner|所有者"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lofiroom-release
+          path: app/build/outputs/apk/release/app-release.apk
+          retention-days: 90
+
+      - name: 挂到 GitHub Release（仅 v* 标签触发时）
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: cp app/build/outputs/apk/release/app-release.apk "lofiroom-${GITHUB_REF_NAME}.apk"
+
+      - name: 创建 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: lofiroom-*.apk
+          generate_release_notes: true
