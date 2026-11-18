@@ -60,6 +60,7 @@
     position: absolute; top: 6px; left: 6px; padding: 2px 8px; border-radius: 8px;
     font-size: 10px; background: var(--gold); color: var(--bg); font-weight: 600;
   }
+  .cell { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
   .cell .del {
     position: absolute; top: 6px; right: 6px; width: 26px; height: 26px; border-radius: 50%;
     background: rgba(0,0,0,.55); color: var(--cream); border: 1px solid rgba(255,255,255,.25);
@@ -364,6 +365,18 @@
   </div>
 </div>
 
+<!-- 删除自定义背景确认弹窗（×按钮与长按共用） -->
+<div id="delwall" class="mask" onclick="if(event.target===this)closeDelWall()">
+  <div class="modal">
+    <h2>删除这张自定义背景？</h2>
+    <div class="imp-note">删除后可在「背景」页重新上传，TV 端即时生效</div>
+    <div class="btns">
+      <button id="delwall-cancel">取消</button>
+      <button class="gold" id="delwall-ok">删除</button>
+    </div>
+  </div>
+</div>
+
 <!-- 备份导入确认弹窗：选恢复模式后再上传 -->
 <div id="import" class="mask">
   <div class="modal">
@@ -479,10 +492,10 @@ function esc(s) {
 function renderWalls() {
   const g = $('#wall-grid');
   g.innerHTML = wallpapers.map(w => `
-    <div class="cell ${w.id === state.wallpaperIndex ? 'applied' : ''}" onclick="applyWall(${w.id})">
+    <div class="cell ${w.id === state.wallpaperIndex ? 'applied' : ''}" onclick="applyWall(${w.id})" data-id="${w.id}" ${!w.builtin ? 'data-custom="1"' : ''}>
       <img src="api/thumbs/wall/${w.id}?v=${encodeURIComponent(w.key || w.id)}" loading="lazy">
       ${w.id === state.wallpaperIndex ? '<div class="tag">当前</div>' : ''}
-      ${!w.builtin ? `<div class="del" onclick="event.stopPropagation();delWall(${w.id})"><svg class="ic"><use href="#i-x"/></svg></div>` : ''}
+      ${!w.builtin ? `<div class="del" onclick="event.stopPropagation();openDelWall(${w.id})"><svg class="ic"><use href="#i-x"/></svg></div>` : ''}
     </div>`).join('');
   $('#wall-empty').style.display = wallpapers.length ? 'none' : 'block';
 }
@@ -524,11 +537,54 @@ async function applyWall(id) {
   catch (e) { toast(e.message, true); }
 }
 
-async function delWall(id) {
-  if (!confirm('删除这张自定义背景？')) return;
+// ── 删除自定义背景：×按钮与长按共用二次确认弹窗 ──────────
+let delWallId = null;
+
+function openDelWall(id) {
+  delWallId = id;
+  $('#delwall').classList.add('on');
+}
+
+function closeDelWall() {
+  delWallId = null;
+  $('#delwall').classList.remove('on');
+}
+
+async function delWall() {
+  if (delWallId == null) return;
+  const id = delWallId;
+  closeDelWall();
   try { await api('api/wallpapers/' + id, { method: 'DELETE' }); toast('已删除'); refresh(); }
   catch (e) { toast(e.message, true); }
 }
+
+$('#delwall-cancel').onclick = closeDelWall;
+$('#delwall-ok').onclick = delWall;
+
+// 长按（触摸/鼠标 500ms）自定义背景格 → 同一确认弹窗；
+// 长按后吞掉随后的合成 click，防止松手误触发「应用背景」
+(function () {
+  const grid = $('#wall-grid');
+  let lpTimer = null, lpFired = false;
+  const lpStart = (e) => {
+    const cell = e.target.closest && e.target.closest('.cell[data-custom]');
+    if (!cell) return;
+    lpFired = false;
+    clearTimeout(lpTimer);
+    lpTimer = setTimeout(() => { lpFired = true; openDelWall(+cell.dataset.id); }, 500);
+  };
+  const lpCancel = () => { clearTimeout(lpTimer); lpTimer = null; };
+  grid.addEventListener('touchstart', lpStart, { passive: true });
+  grid.addEventListener('touchmove', lpCancel, { passive: true });
+  grid.addEventListener('touchend', lpCancel);
+  grid.addEventListener('mousedown', lpStart);
+  grid.addEventListener('mouseup', lpCancel);
+  grid.addEventListener('mouseleave', lpCancel);
+  grid.addEventListener('contextmenu', (e) => e.preventDefault());
+  document.addEventListener('click', (e) => {
+    if (lpFired) { e.stopPropagation(); e.preventDefault(); lpFired = false; }
+  }, true);
+})();
 
 async function playTrack(id) {
   try { await api('api/tracks/' + id + '/play', { method: 'POST' }); toast('开始播放'); refresh(); }

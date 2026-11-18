@@ -80,4 +80,7 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.tv:tv-material:1.0.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
+
+    // 更新机制纯逻辑单测（UpdateChecker 版本解析/比较 + UpdateScheduler 节流退避）
+    testImplementation("junit:junit:4.13.2")
 }

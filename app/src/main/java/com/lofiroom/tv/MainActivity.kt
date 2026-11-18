@@ -17,6 +17,7 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
@@ -32,7 +33,6 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.ComposeView
-import androidx.core.content.FileProvider
 import com.lofiroom.tv.audio.AudioEngine
 import com.lofiroom.tv.audio.VisualizerTap
 import com.lofiroom.tv.custom.CustomLibrary
@@ -43,6 +43,9 @@ import com.lofiroom.tv.net.LanServer
 import com.lofiroom.tv.net.QrCode
 import com.lofiroom.tv.net.ReleaseInfo
 import com.lofiroom.tv.net.UpdateChecker
+import com.lofiroom.tv.net.UpdateInstaller
+import com.lofiroom.tv.net.UpdateScheduler
+import com.lofiroom.tv.net.UpdateState
 import com.lofiroom.tv.ui.LofiPanel
 import com.lofiroom.tv.ui.PanelTab
 import com.lofiroom.tv.ui.VisualizerView
@@ -92,12 +95,17 @@ class MainActivity : ComponentActivity() {
     private val serverUrlState = mutableStateOf("")
     private val customTracks = mutableStateOf<List<Track>>(emptyList())
 
-    // ── 应用内更新（GitHub Releases 源） ───────────────────
-    private val updateLabelState = mutableStateOf("")   // 按钮文案：检查更新 / 下载 vX.Y / 下载中 N%
-    private val updateStatusState = mutableStateOf("")  // 状态行：已是最新 / 发现新版 / 失败原因
+    // ── 应用内更新（多源检测 + 断点续传下载 + 三道闸 + 静默安装） ─────────────
+    private val updateLabelState = mutableStateOf("")   // 按钮文案：检查更新 / 下载 vX.Y / 取消下载
+    private val updateStatusState = mutableStateOf("")  // 状态行：已是最新 / 发现新版 / 下载中 N% / 失败原因
+    private val updateNotesState = mutableStateOf("")   // 发现新版/已更新时 release notes 前 2 行摘要
     private val updateBtnFocusState = mutableStateOf(false) // 按钮焦点态：CUSTOM 页签 OK 键让位
-    private var latestRelease: ReleaseInfo? = null      // 有新版时非空（按钮切为"下载"）
-    private var updateDownloading = false               // 防重复下载
+    private var updateState: UpdateState = UpdateState.Idle  // 更新状态机（B5）
+    private val updateScheduler = UpdateScheduler()          // A2 节流/退避/网络合并（纯逻辑）
+    private var latestRelease: ReleaseInfo? = null      // 有新版时非空（按钮切为"下载"，含下载源列表）
+    private var downloadCancelled = false               // 下载线程取消钩子（再按按钮置 true）
+    private var activityResumed = false                 // 仅前台时跑退避重试
+    private val updatePrefs by lazy { getSharedPreferences("updates", MODE_PRIVATE) }
     private var qrOverlay: View? = null // OK 全屏二维码遮罩（CUSTOM 页签）
 
     private lateinit var splash: FrameLayout
@@ -208,8 +216,11 @@ class MainActivity : ComponentActivity() {
         // #23 局域网管理服务：8788 起，二维码 = http://<ip>:<port>/t/<token>/
         startLanServer()
 
-        // 应用内更新：启动静默检查（有新版时按钮/状态行提示，无新版不打扰）
-        checkUpdate(manual = false)
+        // 应用内更新：A2 调度检测（启动档 3h 新鲜度/退避/网络合并由 UpdateScheduler 保证）
+        updateScheduler.checkedAt = updatePrefs.getLong("checked_at", 0L)
+        val updateDir = getExternalFilesDir(null) ?: filesDir
+        UpdateChecker.cleanupStale(updateDir, currentVersionName()) // 清过期 APK/断点残留
+        if (!detectJustUpdated()) checkUpdate(UpdateScheduler.Trigger.STARTUP)
 
         // #12 启动遮罩：字标淡入 + 兜底撤除（防止首图解码失败时永久遮挡）
         splashLogo.animate().alpha(1f).setDuration(380).start()
@@ -396,7 +407,7 @@ class MainActivity : ComponentActivity() {
         // #23 网络变化即刷新：断网 → CUSTOM 页签引导；换 IP → 二维码换新地址
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val cb = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) { handler.post { refreshQrState() } }
+            override fun onAvailable(network: Network) { handler.post { refreshQrState(); scheduleNetworkCheck() } }
             override fun onLost(network: Network) { handler.post { refreshQrState() } }
         }
         netCallback = cb
@@ -505,6 +516,9 @@ class MainActivity : ComponentActivity() {
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
+    /** 背景格删除确认弹窗：>=0 = 待删除的合并下标（长按 OK 触发） */
+    private val pendingDeleteWall = mutableIntStateOf(-1)
+
     private fun setupPanel() {
         panelCompose.setContent {
             LofiPanel(
@@ -527,6 +541,14 @@ class MainActivity : ComponentActivity() {
                         prefs.edit().putInt("wallpaper_index", i).apply()
                     }
                 },
+                pendingDeleteWall = pendingDeleteWall.intValue,
+                wallDeletable = { i -> CustomLibrary.isCustomWallpaper(i) },
+                onWallDeleteRequest = { pendingDeleteWall.intValue = it },
+                onWallDeleteConfirm = {
+                    CustomLibrary.removeWallpaper(pendingDeleteWall.intValue) // 失败（内置/越界）也照常关弹窗
+                    pendingDeleteWall.intValue = -1
+                },
+                onWallDeleteDismiss = { pendingDeleteWall.intValue = -1 },
                 autoRotate = autoRotateState.value,
                 onAutoRotateToggle = {
                     wallpaper.autoRotate = !wallpaper.autoRotate
@@ -537,6 +559,7 @@ class MainActivity : ComponentActivity() {
                 serverUrl = serverUrlState.value,
                 updateActionLabel = updateLabelState.value.ifEmpty { getString(R.string.update_check) },
                 updateStatus = updateStatusState.value,
+                updateNotes = updateNotesState.value,
                 onUpdateAction = { onUpdateAction() },
                 onUpdateFocusChange = { updateBtnFocusState.value = it },
                 tabsFocus = tabsFocus,
@@ -555,6 +578,8 @@ class MainActivity : ComponentActivity() {
         } else {
             panelWrap.visibility = View.VISIBLE
             panelOpenTick.intValue++ // Compose 侧 LaunchedEffect 先请求一次页签焦点
+            // A2 面板档检测：10min 新鲜度内由调度器跳过，不产生多余请求
+            checkUpdate(UpdateScheduler.Trigger.PANEL_OPEN)
             // 布局完成后再抢一次：visibility 变化后的默认焦点分配可能把焦点落到 panel_wrap
             panelCompose.post {
                 runCatching {
@@ -592,85 +617,249 @@ class MainActivity : ComponentActivity() {
 
     // ── 遥控器 / 按键交互 ────────────────────────────────────
 
-    // ── 应用内更新（GitHub Releases → 下载 APK → 签名校验 → 唤起安装） ─────────
+    // ── 应用内更新（多源检测 + 断点续传 + 三道闸 + 静默安装/降级） ─────────
 
-    /** 按钮动作：已有新版→下载；否则→检查 */
-    private fun onUpdateAction() {
-        val rel = latestRelease
-        if (rel != null) downloadUpdate(rel) else checkUpdate(manual = true)
+    private fun currentVersionName(): String =
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "0"
+
+    /** C4 刚更新完（lastUpdateTime 2 分钟内）：显示"已更新到 vX.Y"+notes，跳过自动检测 */
+    private fun detectJustUpdated(): Boolean {
+        val now = System.currentTimeMillis()
+        val updated = packageManager.getPackageInfo(packageName, 0).lastUpdateTime
+        if (now - updated !in 0 until 120_000L) return false
+        val v = currentVersionName()
+        val notes = updatePrefs.getString("notes_for", "")
+            ?.takeIf { it == v }?.let { updatePrefs.getString("notes", "") } ?: ""
+        updateScheduler.checkedAt = now // 新装版本无需再检
+        applyUpdateState(UpdateState.Updated(v, notes))
+        return true
     }
 
-    /** 后台拉 GitHub Releases 最新版比较；manual=true 时把结果（含失败）反馈到状态行 */
-    private fun checkUpdate(manual: Boolean) {
-        if (updateDownloading) return
-        if (manual) updateLabelState.value = getString(R.string.update_checking)
+    /** 按钮动作：下载中→取消下载；有新版→下载；否则→手动检查 */
+    private fun onUpdateAction() {
+        when {
+            updateState is UpdateState.Downloading -> { // D2 再按 = 取消
+                downloadCancelled = true
+                applyUpdateState(UpdateState.Idle)
+            }
+            latestRelease != null -> downloadUpdate(latestRelease!!)
+            else -> checkUpdate(UpdateScheduler.Trigger.MANUAL)
+        }
+    }
+
+    /** A2 检测入口：UpdateScheduler 裁决（3h/10min 新鲜度、退避、防抖、网络合并）；MANUAL 旁路 */
+    private fun checkUpdate(trigger: UpdateScheduler.Trigger) {
+        val st = updateState
+        if (st is UpdateState.Downloading || st is UpdateState.Verifying || st is UpdateState.Installing) return
+        when (updateScheduler.begin(trigger)) {
+            UpdateScheduler.Decision.SKIP_CHECKING -> {
+                if (trigger == UpdateScheduler.Trigger.MANUAL) {
+                    updateLabelState.value = getString(R.string.update_checking) // 正在检，复用进行中结果
+                }
+                return
+            }
+            UpdateScheduler.Decision.SKIP_BACKOFF -> { scheduleRetry(); return } // 失败退避：到点自动重试
+            UpdateScheduler.Decision.SKIP_INTERVAL, UpdateScheduler.Decision.SKIP_FRESH -> return
+            UpdateScheduler.Decision.RUN -> Unit
+        }
+        if (trigger == UpdateScheduler.Trigger.MANUAL) applyUpdateState(UpdateState.Checking)
         Thread {
-            val cur = packageManager.getPackageInfo(packageName, 0).versionName ?: "0"
+            val cur = currentVersionName()
             val rel = UpdateChecker.fetchLatest()
             handler.post {
                 if (rel == null) {
-                    if (manual) {
-                        updateLabelState.value = getString(R.string.update_check)
-                        updateStatusState.value = getString(R.string.update_check_failed)
+                    updateScheduler.onFailure()
+                    if (trigger == UpdateScheduler.Trigger.MANUAL) {
+                        applyUpdateState(UpdateState.Failed(UpdateState.Reason.Check))
                     }
+                    scheduleRetry() // 30s/2min/10min/30min 退避序列，仅前台
                     return@post
                 }
+                updateScheduler.onSuccess() // checkedAt 仅成功时推进
+                updatePrefs.edit()
+                    .putString("latest", rel.versionName)
+                    .putString("notes", rel.notes)
+                    .putString("notes_for", rel.versionName)
+                    .putLong("checked_at", updateScheduler.checkedAt)
+                    .apply()
+                // 已更新终态不被后台检测覆盖（MANUAL 除外）
+                if (updateState is UpdateState.Updated && trigger != UpdateScheduler.Trigger.MANUAL) return@post
                 if (UpdateChecker.hasUpdate(cur, rel.versionName)) {
                     latestRelease = rel
-                    updateLabelState.value = getString(R.string.update_download, rel.versionName)
-                    updateStatusState.value = getString(R.string.update_found, rel.versionName)
+                    applyUpdateState(UpdateState.Available(rel.versionName, rel.notes))
                 } else {
                     latestRelease = null
-                    updateLabelState.value = getString(R.string.update_check)
-                    if (manual) updateStatusState.value = getString(R.string.update_none, cur)
+                    if (trigger == UpdateScheduler.Trigger.MANUAL || updateState !is UpdateState.Idle) {
+                        applyUpdateState(UpdateState.UpToDate(cur))
+                    }
                 }
             }
         }.start()
     }
 
-    /** 下载 APK 到应用私有目录，进度回按钮；完成后校验签名再唤起系统安装器 */
+    /** 失败退避重试（30s/2min/10min/30min）：仅前台执行，回后台挂起不丢 */
+    private val retryRunnable = Runnable {
+        if (activityResumed) checkUpdate(UpdateScheduler.Trigger.RETRY) else scheduleRetry()
+    }
+
+    private fun scheduleRetry() {
+        handler.removeCallbacks(retryRunnable)
+        val delay = updateScheduler.retryDelayMs() ?: return
+        handler.postDelayed(retryRunnable, delay)
+    }
+
+    /** 网络恢复检测（A2）：调度器内 2s 窗口合并抖动 + 5s 最小间隔 */
+    private val networkCheckRunnable = Runnable { checkUpdate(UpdateScheduler.Trigger.NETWORK) }
+
+    private fun scheduleNetworkCheck() {
+        if (updateScheduler.onNetworkEvent()) {
+            handler.removeCallbacks(networkCheckRunnable)
+            handler.postDelayed(networkCheckRunnable, UpdateScheduler.NETWORK_SETTLE_MS)
+        }
+    }
+
+    /** B 层下载：多源断点续传 → 三道闸 → C 层安装；下载中再按按钮可取消 */
     private fun downloadUpdate(rel: ReleaseInfo) {
-        if (updateDownloading) return
-        updateDownloading = true
+        if (updateState is UpdateState.Downloading) return
+        downloadCancelled = false
+        applyUpdateState(UpdateState.Downloading(rel.versionName, -1))
         Thread {
             val dir = getExternalFilesDir(null) ?: filesDir
             val apk = File(dir, "update-${rel.versionName}.apk")
-            val ok = UpdateChecker.download(rel.apkUrl, apk) { pct ->
-                handler.post { updateLabelState.value = getString(R.string.update_downloading, pct) }
-            }
+            val ok = UpdateChecker.download(
+                rel.apkUrls, apk,
+                { pct -> handler.post { if (!downloadCancelled) applyUpdateState(UpdateState.Downloading(rel.versionName, pct)) } },
+                cancelled = { downloadCancelled },
+            )
             handler.post {
-                updateDownloading = false
+                if (downloadCancelled) { downloadCancelled = false; return@post } // 用户取消：保持 Idle
                 if (!ok) {
-                    updateLabelState.value = getString(R.string.update_download, rel.versionName)
-                    updateStatusState.value = getString(R.string.update_download_failed)
+                    applyUpdateState(UpdateState.Failed(UpdateState.Reason.Download))
                     return@post
                 }
-                if (!UpdateChecker.signatureMatches(this, apk)) {
-                    // 调试签名装机点更新会走到这：给明确提示，不弹必然失败的安装器
-                    latestRelease = null
-                    updateLabelState.value = getString(R.string.update_check)
-                    updateStatusState.value = getString(R.string.update_sig_mismatch)
+                applyUpdateState(UpdateState.Verifying)
+                // B4 三道闸 fail-closed：包名/签名/版本回滚任一不过即拦截（异常也拒收）
+                if (!UpdateChecker.verify(this, apk) || !UpdateChecker.sameSigner(this, apk)) {
+                    apk.delete()
+                    applyUpdateState(UpdateState.Failed(UpdateState.Reason.Verify))
                     return@post
                 }
-                updateLabelState.value = getString(R.string.update_check)
-                updateStatusState.value = getString(R.string.update_installing)
-                installApk(apk)
+                if (!UpdateChecker.notOlder(this, apk)) {
+                    apk.delete()
+                    applyUpdateState(UpdateState.Failed(UpdateState.Reason.NotNewer)) // 防镜像未更新导致回滚
+                    return@post
+                }
+                applyUpdateState(UpdateState.Installing)
+                UpdateInstaller.listener = installerListener
+                if (!UpdateInstaller.install(this, apk)) {
+                    applyUpdateState(UpdateState.Failed(UpdateState.Reason.Install))
+                }
             }
         }.start()
     }
 
-    /** FileProvider 供安装器读 APK（Android 7+ 禁 file:// 直传） */
-    private fun installApk(apk: File) {
-        try {
-            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apk)
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "application/vnd.android.package-archive")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            startActivity(intent)
-        } catch (e: Exception) {
-            updateStatusState.value = getString(R.string.update_install_failed)
+    /** C 层安装结果回执（session 静默/确认页/降级 ACTION_VIEW 共用） */
+    private val installerListener = object : UpdateInstaller.Listener {
+        override fun onWaitingUserAction() { // 系统拉起传统确认页
+            updateStatusState.value = getString(R.string.update_waiting)
         }
+
+        override fun onSuccess() {
+            applyUpdateState(
+                UpdateState.Updated(
+                    latestRelease?.versionName ?: currentVersionName(),
+                    latestRelease?.notes ?: ""
+                )
+            )
+        }
+
+        override fun onAborted() {
+            applyUpdateState(UpdateState.Idle)
+        }
+
+        override fun onOpened() {
+            updateStatusState.value = getString(R.string.update_installing)
+        }
+
+        override fun onFailed() {
+            applyUpdateState(UpdateState.Failed(UpdateState.Reason.Install))
+        }
+    }
+
+    /** B5 状态机 → 按钮/状态行/notes 三路渲染 */
+    private fun applyUpdateState(s: UpdateState) {
+        updateState = s
+        when (s) {
+            UpdateState.Idle -> {
+                updateLabelState.value = getString(R.string.update_check)
+                updateStatusState.value = ""
+                updateNotesState.value = ""
+            }
+
+            UpdateState.Checking -> updateLabelState.value = getString(R.string.update_checking)
+
+            is UpdateState.UpToDate -> {
+                updateLabelState.value = getString(R.string.update_check)
+                updateStatusState.value = getString(R.string.update_none, s.versionName)
+                updateNotesState.value = ""
+            }
+
+            is UpdateState.Available -> {
+                updateLabelState.value = getString(R.string.update_download, s.versionName)
+                updateStatusState.value = getString(R.string.update_found, s.versionName)
+                updateNotesState.value = notesSummary(s.notes) // D1 前 2 行摘要
+            }
+
+            is UpdateState.Downloading -> {
+                updateLabelState.value = getString(R.string.update_cancel) // D2 取消下载
+                updateStatusState.value = if (s.percent >= 0) {
+                    getString(R.string.update_downloading, s.percent)
+                } else {
+                    getString(R.string.update_downloading_unknown) // 服务端未报大小
+                }
+            }
+
+            UpdateState.Verifying -> {
+                updateLabelState.value = getString(R.string.update_verifying)
+                updateStatusState.value = ""
+            }
+
+            UpdateState.Installing -> {
+                updateLabelState.value = getString(R.string.update_installing)
+                updateStatusState.value = getString(R.string.update_waiting)
+            }
+
+            is UpdateState.Updated -> {
+                updateLabelState.value = getString(R.string.update_check)
+                updateStatusState.value = getString(R.string.update_updated, s.versionName)
+                updateNotesState.value = notesSummary(s.notes)
+            }
+
+            is UpdateState.Failed -> {
+                // 下载失败保留"下载 vX.Y"按钮可重试；其余回"检查更新"
+                updateLabelState.value = if (s.reason == UpdateState.Reason.Download && latestRelease != null) {
+                    getString(R.string.update_download, latestRelease!!.versionName)
+                } else {
+                    getString(R.string.update_check)
+                }
+                updateStatusState.value = when (s.reason) {
+                    UpdateState.Reason.Check -> getString(R.string.update_check_failed)
+                    UpdateState.Reason.Download -> getString(R.string.update_download_failed)
+                    UpdateState.Reason.Verify -> getString(R.string.update_verify_failed)
+                    UpdateState.Reason.NotNewer -> getString(R.string.update_not_newer)
+                    UpdateState.Reason.Install -> getString(R.string.update_install_failed)
+                }
+                updateNotesState.value = ""
+            }
+        }
+    }
+
+    /** D1 release notes 摘要：取前 2 个非空行，最长 120 字符 */
+    private fun notesSummary(notes: String): String {
+        val two = notes.lineSequence()
+            .map { it.trim() }.filter { it.isNotEmpty() }.take(2)
+            .joinToString(" · ")
+        return if (two.length > 120) two.take(120) + "…" else two
     }
 
     /** #compose-tv-migration 面板打开时只拦 BACK/MENU；方向与确认键交给 Compose 焦点系统 */
@@ -691,6 +880,11 @@ class MainActivity : ComponentActivity() {
             return true
         }
         if (panelWrap.visibility == View.VISIBLE && event.action == KeyEvent.ACTION_DOWN) {
+            // 删除确认弹窗打开时 BACK 只关弹窗，不动面板
+            if (pendingDeleteWall.intValue >= 0 && event.keyCode == KeyEvent.KEYCODE_BACK) {
+                pendingDeleteWall.intValue = -1
+                return true
+            }
             when (event.keyCode) {
                 KeyEvent.KEYCODE_BACK,
                 KeyEvent.KEYCODE_MENU,
@@ -724,14 +918,17 @@ class MainActivity : ComponentActivity() {
                 engine.togglePlay(); true
             }
 
+            // 短按切歌（松手触发）/ 长按切背景（到阈值切一次，按住连发不重复切）
             KeyEvent.KEYCODE_DPAD_LEFT,
             KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
-                engine.prev(); true
+                if ((event?.repeatCount ?: 0) == 0) armLongPress(keyCode, -1)
+                true
             }
 
             KeyEvent.KEYCODE_DPAD_RIGHT,
             KeyEvent.KEYCODE_MEDIA_NEXT -> {
-                engine.next(); true
+                if ((event?.repeatCount ?: 0) == 0) armLongPress(keyCode, +1)
+                true
             }
 
             KeyEvent.KEYCODE_DPAD_UP -> {
@@ -765,6 +962,53 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == watchedKey) {
+            pendingShortPress?.let { handler.removeCallbacks(it) }
+            pendingShortPress = null
+            val shortPress = !longPressFired
+            watchedKey = 0
+            longPressFired = false
+            if (shortPress) {
+                when (keyCode) {
+                    KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MEDIA_PREVIOUS -> engine.prev()
+                    KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_NEXT -> engine.next()
+                }
+            }
+            return true
+        }
+        return super.onKeyUp(keyCode, event)
+    }
+
+    // ── 短按切歌 / 长按切背景（遥控器左右键）──────────────
+    private var watchedKey = 0
+    private var longPressFired = false
+    private var pendingShortPress: Runnable? = null
+
+    /** 装长按判定：到系统长按阈值切背景一次；阈值前松手由 onKeyUp 走短按切歌 */
+    private fun armLongPress(keyCode: Int, wallpaperDelta: Int) {
+        watchedKey = keyCode
+        longPressFired = false
+        pendingShortPress?.let { handler.removeCallbacks(it) }
+        val r = Runnable {
+            longPressFired = true
+            pendingShortPress = null
+            switchWallpaper(wallpaperDelta)
+        }
+        pendingShortPress = r
+        handler.postDelayed(r, ViewConfiguration.getLongPressTimeout().toLong())
+    }
+
+    /** 长按切背景：环形切换 + 记忆选择，静默切换不打扰 */
+    private fun switchWallpaper(delta: Int) {
+        val n = wallpaper.count
+        if (n <= 0) return
+        val target = ((appliedWallState.intValue + delta) % n + n) % n
+        appliedWallState.intValue = target
+        prefs.edit().putInt("wallpaper_index", target).apply()
+        wallpaper.show(target)
+    }
+
     private fun changeVolume(delta: Float) {
         val v = (engine.volume() + delta).coerceIn(0f, 1f)
         engine.setVolume(v)
@@ -780,8 +1024,17 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        activityResumed = true
         configureWindow()
         hideSystemBars()
+        // C1 确认页 1.5s 闪退判定回调；回前台补一次调度检查（3h 新鲜度内自动跳过）
+        UpdateInstaller.onAppResumed()
+        checkUpdate(UpdateScheduler.Trigger.STARTUP)
+    }
+
+    override fun onPause() {
+        activityResumed = false
+        super.onPause()
     }
 
     override fun onDestroy() {
@@ -795,6 +1048,7 @@ class MainActivity : ComponentActivity() {
         lanServer = null
         super.onDestroy()
         handler.removeCallbacksAndMessages(null)
+        UpdateInstaller.listener = null // 安装执行器全局持监听器，随 Activity 释放防泄漏
         wallpaper.stop()
         engine.release()
     }

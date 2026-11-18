@@ -46,7 +46,11 @@ jobs:
 
       - name: 挂到 GitHub Release（仅 v* 标签触发时）
         if: startsWith(github.ref, 'refs/tags/v')
-        run: cp app/build/outputs/apk/release/app-release.apk "lofiroom-${GITHUB_REF_NAME}.apk"
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk "lofiroom-${GITHUB_REF_NAME}.apk"
+          # 固定名直链：releases/latest/download/lofiroom-latest.apk 恒指向最新版，
+          # 供 APK 内多源下载优先使用（不依赖 API 限流、少一次 302 跳转）
+          cp app/build/outputs/apk/release/app-release.apk lofiroom-latest.apk
 
       - name: 创建 Release
         if: startsWith(github.ref, 'refs/tags/v')

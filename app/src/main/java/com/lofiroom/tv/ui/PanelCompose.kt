@@ -2,10 +2,13 @@ package com.lofiroom.tv.ui
 
 import android.graphics.Bitmap
 import android.graphics.Typeface
+import android.view.ViewConfiguration
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -27,6 +30,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,6 +40,11 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -46,6 +55,9 @@ import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 import com.lofiroom.tv.R
 import com.lofiroom.tv.data.Track
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 // #compose-tv-migration P1-P3：面板 Compose 实现。
 // 焦点/点击/遥控+触摸交互交给 Compose 焦点系统（不再手写 panelKey），
@@ -73,12 +85,18 @@ fun LofiPanel(
     thumbOf: (Int) -> Bitmap?,
     appliedIndex: Int,
     onWallClick: (Int) -> Unit,
+    pendingDeleteWall: Int,
+    wallDeletable: (Int) -> Boolean,
+    onWallDeleteRequest: (Int) -> Unit,
+    onWallDeleteConfirm: () -> Unit,
+    onWallDeleteDismiss: () -> Unit,
     autoRotate: Boolean,
     onAutoRotateToggle: () -> Unit,
     qrBitmap: Bitmap?,
     serverUrl: String,
     updateActionLabel: String,
     updateStatus: String,
+    updateNotes: String,
     onUpdateAction: () -> Unit,
     onUpdateFocusChange: (Boolean) -> Unit,
     tabsFocus: FocusRequester,
@@ -94,9 +112,13 @@ fun LofiPanel(
 
     // #compose-tv-migration 面板每次打开后把焦点交给页签（LaunchedEffect 保证组合完成后执行）
     LaunchedEffect(openTick) {
-        if (openTick > 0) runCatching { tabsFocus.requestFocus() }
+        if (openTick > 0) {
+            onWallDeleteDismiss() // 面板重开清掉悬挂的删除确认
+            runCatching { tabsFocus.requestFocus() }
+        }
     }
 
+    Box {
     Box(
         modifier = Modifier
             .width(480.dp)
@@ -149,6 +171,8 @@ fun LofiPanel(
                         thumbOf = thumbOf,
                         appliedIndex = appliedIndex,
                         onWallClick = onWallClick,
+                        wallDeletable = wallDeletable,
+                        onWallLongClick = onWallDeleteRequest,
                         autoRotate = autoRotate,
                         onAutoRotateToggle = onAutoRotateToggle,
                         sans = sans,
@@ -159,6 +183,7 @@ fun LofiPanel(
                         serverUrl = serverUrl,
                         updateActionLabel = updateActionLabel,
                         updateStatus = updateStatus,
+                        updateNotes = updateNotes,
                         onUpdateAction = onUpdateAction,
                         onUpdateFocusChange = onUpdateFocusChange,
                         sans = sans,
@@ -181,6 +206,19 @@ fun LofiPanel(
                 fontSize = 10.sp,
                 letterSpacing = 0.2.sp,
                 maxLines = 1,
+            )
+        }
+    }
+
+        if (pendingDeleteWall >= 0) {
+            DeleteWallDialog(
+                // matchParentSize 只匹配面板卡、不参与外层测量：
+                // ComposeView 是 wrap_content（靠右居中），fillMaxSize 会把它撑成全屏导致整页错位
+                modifier = Modifier.matchParentSize(),
+                onConfirm = onWallDeleteConfirm,
+                onDismiss = onWallDeleteDismiss,
+                sans = sans,
+                serif = serif,
             )
         }
     }
@@ -223,6 +261,7 @@ private fun CustomPane(
     serverUrl: String,
     updateActionLabel: String,
     updateStatus: String,
+    updateNotes: String,
     onUpdateAction: () -> Unit,
     onUpdateFocusChange: (Boolean) -> Unit,
     sans: FontFamily,
@@ -300,6 +339,17 @@ private fun CustomPane(
                     letterSpacing = 0.2.sp,
                 )
             }
+            if (updateNotes.isNotEmpty()) { // D1 发现新版/已更新：release notes 前 2 行摘要
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    text = updateNotes,
+                    color = CreamDim,
+                    fontFamily = sans,
+                    fontSize = 9.sp,
+                    letterSpacing = 0.2.sp,
+                    maxLines = 2,
+                )
+            }
         }
     }
 }
@@ -368,6 +418,8 @@ private fun WallGrid(
     thumbOf: (Int) -> Bitmap?,
     appliedIndex: Int,
     onWallClick: (Int) -> Unit,
+    wallDeletable: (Int) -> Boolean,
+    onWallLongClick: (Int) -> Unit,
     autoRotate: Boolean,
     onAutoRotateToggle: () -> Unit,
     sans: FontFamily,
@@ -385,7 +437,9 @@ private fun WallGrid(
             WallCell(
                 thumb = thumbOf(i),
                 applied = i == appliedIndex,
+                deletable = wallDeletable(i),
                 onClick = { onWallClick(i) },
+                onLongClick = { onWallLongClick(i) },
             )
         }
     }
@@ -435,15 +489,56 @@ private fun ToggleCell(autoRotate: Boolean, onToggle: () -> Unit, sans: FontFami
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun WallCell(thumb: Bitmap?, applied: Boolean, onClick: () -> Unit) {
+private fun WallCell(thumb: Bitmap?, applied: Boolean, deletable: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
+    // 自定义格：遥控 OK 短按=应用 / 长按=删除确认；触摸长按走 combinedClickable
+    // 长按判定：到系统长按阈值触发一次（连发只切一次），阈值前松手走短按
+    val scope = rememberCoroutineScope()
+    var longJob by remember { mutableStateOf<Job?>(null) }
+    var longFired by remember { mutableStateOf(false) }
+    val keyMod = if (deletable) {
+        Modifier.onPreviewKeyEvent { e ->
+            if (e.key != Key.DirectionCenter && e.key != Key.Enter && e.key != Key.NumPadEnter) {
+                false
+            } else when (e.type) {
+                KeyEventType.KeyDown -> {
+                    if (e.nativeKeyEvent.repeatCount == 0) {
+                        longFired = false
+                        longJob?.cancel()
+                        longJob = scope.launch {
+                            delay(ViewConfiguration.getLongPressTimeout().toLong())
+                            longFired = true
+                            onLongClick()
+                        }
+                    }
+                    true
+                }
+                KeyEventType.KeyUp -> {
+                    longJob?.cancel()
+                    longJob = null
+                    if (!longFired) onClick()
+                    longFired = false
+                    true
+                }
+                else -> false
+            }
+        }
+    } else Modifier
     Box(
         modifier = Modifier
             .height(92.dp)
             .fillMaxWidth()
             .onFocusChanged { focused = it.isFocused }
-            .clickable(onClick = onClick)
+            .then(keyMod)
+            .let {
+                if (deletable) {
+                    it.combinedClickable(onClick = onClick, onLongClick = onLongClick)
+                } else {
+                    it.clickable(onClick = onClick)
+                }
+            }
             .cellFrame(focused = focused, applied = applied)
     ) {
         if (thumb != null) {
@@ -456,6 +551,67 @@ private fun WallCell(thumb: Bitmap?, applied: Boolean, onClick: () -> Unit) {
                     .padding(2.dp)
                     .clip(RoundedCornerShape(18.dp)),
             )
+        }
+    }
+}
+
+/** 删除自定义背景二次确认：默认焦点在「取消」防误删，BACK/点遮罩关闭 */
+@Composable
+private fun DeleteWallDialog(
+    modifier: Modifier,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+    sans: FontFamily,
+    serif: FontFamily,
+) {
+    val cancelFocus = remember { FocusRequester() }
+    var cancelFocused by remember { mutableStateOf(false) }
+    var okFocused by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { runCatching { cancelFocus.requestFocus() } }
+    Box(
+        modifier = modifier
+            .background(Color(0xB3000000))
+            .pointerInput(Unit) { detectTapGestures { onDismiss() } },
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .width(330.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(PanelFill, RoundedCornerShape(20.dp))
+                .border(1.dp, PanelStroke, RoundedCornerShape(20.dp))
+                .padding(22.dp)
+        ) {
+            Text("删除这张自定义背景？", color = Cream, fontFamily = serif, fontSize = 17.sp)
+            Spacer(Modifier.height(8.dp))
+            Text("删除后可在 H5 管理页重新上传", color = CreamDim, fontFamily = sans, fontSize = 10.sp, letterSpacing = 0.2.sp)
+            Spacer(Modifier.height(18.dp))
+            Row {
+                Box(
+                    modifier = Modifier
+                        .width(110.dp)
+                        .height(44.dp)
+                        .onFocusChanged { cancelFocused = it.isFocused }
+                        .clickable(onClick = onDismiss)
+                        .focusRequester(cancelFocus)
+                        .cellFrame(focused = cancelFocused, applied = false),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("取消", color = Cream, fontFamily = sans, fontSize = 13.sp)
+                }
+                Spacer(Modifier.width(14.dp))
+                Box(
+                    modifier = Modifier
+                        .width(110.dp)
+                        .height(44.dp)
+                        .onFocusChanged { okFocused = it.isFocused }
+                        .clickable(onClick = onConfirm)
+                        .cellFrame(focused = okFocused, applied = false),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("删除", color = Color(0xFFE08078), fontFamily = sans, fontSize = 13.sp)
+                }
+            }
         }
     }
 }

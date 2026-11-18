@@ -43,6 +43,20 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- 应用内更新：PackageInstaller Session 结果回执（本应用 PendingIntent 发出） -->
+        <receiver
+            android:name=".net.UpdateResultReceiver"
+            android:exported="false" />
+
+        <!-- 发布演练钩子：adb 广播走"三道闸 → 安装"链路（不经网络下载） -->
+        <receiver
+            android:name=".net.UpdateTestReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.lofiroom.tv.UPDATE_TEST" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>

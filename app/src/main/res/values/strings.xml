@@ -3,11 +3,11 @@
     <string name="app_name">Lofi Room</string>
     <string name="label_playlist">LOFI ROOM PLAYLIST</string>
     <string name="brand">CHILLNOVA</string>
-    <string name="hint">OK 播放/暂停&#160;&#160;&#160;← → 切歌&#160;&#160;&#160;↑↓ 音量&#160;&#160;&#160;MENU 播放列表</string>
+    <string name="hint">OK 播放/暂停&#160;&#160;&#160;← → 切歌 · 长按换背景&#160;&#160;&#160;↑↓ 音量&#160;&#160;&#160;MENU 播放列表</string>
     <string name="panel_title">PLAYLIST · 曲目</string>
     <string name="panel_title_bg">BACKGROUND · 背景</string>
     <string name="panel_hint">↑↓←→ 选择 · 上下切页签 · OK 播放 · MENU/BACK 关闭</string>
-    <string name="panel_hint_bg">↑↓←→ 选图 · 上下切页签 · OK 设置 · MENU/BACK 关闭</string>
+    <string name="panel_hint_bg">↑↓←→ 选图 · OK 设置 · 长按 OK 删自定义 · MENU/BACK 关闭</string>
     <string name="panel_title_custom">CUSTOM · 自定义</string>
     <string name="panel_hint_custom">手机扫码管理背景与音乐 · OK 全屏二维码 · MENU/BACK 关闭</string>
     <string name="auto_rotate">自动切换</string>
@@ -19,16 +19,23 @@
     <string name="qr_overlay_hint">扫码打开管理页 · OK/BACK 返回</string>
     <string name="exit_toast">再按一次返回键退出</string>
 
-    <!-- 应用内更新（GitHub Releases 源） -->
+    <!-- 应用内更新（多源检测 + 断点续传 + 静默安装） -->
     <string name="update_check">检查更新</string>
     <string name="update_checking">检查中…</string>
     <string name="update_none">当前 v%1$s 已是最新</string>
     <string name="update_found">发现新版 v%1$s · OK 下载</string>
     <string name="update_download">下载 v%1$s</string>
     <string name="update_downloading">下载中 %1$d%%</string>
+    <string name="update_downloading_unknown">下载中…</string>
+    <string name="update_cancel">取消下载</string>
+    <string name="update_verifying">校验中…</string>
+    <string name="update_verify_failed">安装包校验失败 · 已拦截</string>
+    <string name="update_not_newer">安装包版本异常 · 已拦截</string>
     <string name="update_check_failed">检查失败 · 网络不可用</string>
     <string name="update_download_failed">下载失败 · 请重试</string>
     <string name="update_sig_mismatch">签名不一致 · 请手动覆盖安装</string>
     <string name="update_installing">下载完成 · 唤起安装器</string>
+    <string name="update_waiting">等待系统确认…</string>
+    <string name="update_updated">已更新到 v%1$s</string>
     <string name="update_install_failed">唤起安装失败 · 请手动安装</string>
 </resources>

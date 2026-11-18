@@ -431,6 +431,11 @@ object CustomLibrary {
         true
     }
 
+    /** 是否自定义壁纸（合并下标）；内置/越界返回 false */
+    fun isCustomWallpaper(index: Int): Boolean = synchronized(lock) {
+        index - builtinWalls.size in customWalls.indices
+    }
+
     /** 落盘一首自定义音频，返回合并下标；失败返回 -1 */
     fun addTrack(src: File, title: String, sub: String): Int = synchronized(lock) {
         try {
