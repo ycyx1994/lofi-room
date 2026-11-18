@@ -56,11 +56,6 @@
   }
   .cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .cell.applied { border-color: var(--gold); }
-  .cell .name {
-    position: absolute; left: 0; right: 0; bottom: 0; padding: 16px 8px 6px;
-    background: linear-gradient(transparent, rgba(0,0,0,.78));
-    font-size: 11px; color: var(--cream); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
   .cell .tag {
     position: absolute; top: 6px; left: 6px; padding: 2px 8px; border-radius: 8px;
     font-size: 10px; background: var(--gold); color: var(--bg); font-weight: 600;
@@ -222,7 +217,6 @@
     main { padding: 24px 30px 0; }
     .more-btn { width: 42px; height: 42px; font-size: 18px; }
     .bar label { padding: 15px 0; font-size: 15px; }
-    .cell .name { font-size: 12px; }
     .track { padding: 15px 16px; }
     .empty { padding: 48px 0; font-size: 14px; }
     #more-btn { top: 26px; right: 30px; }
@@ -489,7 +483,6 @@ function renderWalls() {
       <img src="api/thumbs/wall/${w.id}?v=${encodeURIComponent(w.key || w.id)}" loading="lazy">
       ${w.id === state.wallpaperIndex ? '<div class="tag">当前</div>' : ''}
       ${!w.builtin ? `<div class="del" onclick="event.stopPropagation();delWall(${w.id})"><svg class="ic"><use href="#i-x"/></svg></div>` : ''}
-      <div class="name">${esc(w.name)}</div>
     </div>`).join('');
   $('#wall-empty').style.display = wallpapers.length ? 'none' : 'block';
 }

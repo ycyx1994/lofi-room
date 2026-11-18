@@ -21,7 +21,7 @@ import java.util.zip.ZipOutputStream
 
 /**
  * #23 自定义内容库：内置资产 + 用户上传（H5 管理页）的合并视图。
- * - 壁纸命名约定：内置 = "wall_01.jpg"（assets/wallpapers/），自定义 = "custom/<文件名>"（custom/wallpapers/）
+ * - 壁纸命名约定：内置 = "wall_01.webp"（assets/wallpapers/），自定义 = "custom/<文件名>"（custom/wallpapers/）
  * - 曲目：内置 Track(isCustom=false)，自定义 Track(isCustom=true, asset=绝对路径)
  * - 元数据 custom/meta.json（org.json 读写）持久化自定义项的展示名与顺序
  */

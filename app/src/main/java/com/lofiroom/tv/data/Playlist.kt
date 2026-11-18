@@ -70,20 +70,17 @@ object Playlist {
         )
     )
 
-    /** 壁纸显示名，顺序与 assets/wallpapers/wall_01..17.jpg 一一对应 */
+    /** 壁纸显示名，顺序与 assets/wallpapers/wall_01..14.webp 一一对应 */
     val wallpapers = listOf(
         Wallpaper("城市夜景", "City Night"),
         Wallpaper("书桌", "Desk"),
         Wallpaper("客厅", "Interior"),
         Wallpaper("窗台植物", "Plants"),
-        Wallpaper("壁炉小猫", "Kitten"),
         Wallpaper("森林单车", "Forest Ride"),
         Wallpaper("雨窗花田", "Forest Window"),
         Wallpaper("深夜书桌", "Night Desk"),
-        Wallpaper("炉边小猫", "Fireside Cat"),
         Wallpaper("藤椅窗边", "Rattan Chair"),
         Wallpaper("暮色百叶窗", "Dusk Blinds"),
-        Wallpaper("书桌工位", "Work Desk"),
         Wallpaper("窗边小猫", "Window Cat"),
         Wallpaper("电视墙", "TV Wall"),
         Wallpaper("客厅全景", "Living Room"),
