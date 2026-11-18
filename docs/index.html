@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LofiRoom TV · 音乐壁纸播放器</title>
+<meta name="description" content="LofiRoom TV —— 安卓电视音乐壁纸播放器：氛围音乐 + 动态壁纸 + 局域网传歌，免费无广告。">
+<style>
+  :root {
+    --bg: #14110d;
+    --card: #1d1812;
+    --gold: #d8b57e;
+    --cream: #f2e9d8;
+    --dim: #b3a488;
+    --line: #35291b;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--cream);
+    font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 48px 20px 32px;
+  }
+  .logo {
+    font-size: 13px;
+    letter-spacing: 6px;
+    color: var(--gold);
+    text-transform: uppercase;
+    margin-bottom: 18px;
+  }
+  h1 {
+    font-size: clamp(30px, 6vw, 52px);
+    letter-spacing: 2px;
+    font-weight: 600;
+    text-align: center;
+  }
+  h1 .en { display: block; font-size: .45em; letter-spacing: 8px; color: var(--dim); margin-top: 10px; }
+  .tag {
+    margin-top: 14px;
+    color: var(--dim);
+    font-size: 15px;
+    letter-spacing: 1px;
+    text-align: center;
+    line-height: 1.8;
+  }
+  .card {
+    margin-top: 36px;
+    width: 100%;
+    max-width: 560px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 28px 26px;
+  }
+  .ver {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .ver b { font-size: 20px; color: var(--gold); letter-spacing: 1px; }
+  .ver span { color: var(--dim); font-size: 13px; }
+  .btns { margin-top: 20px; display: flex; flex-direction: column; gap: 12px; }
+  a.btn {
+    display: block;
+    text-align: center;
+    padding: 14px 18px;
+    border-radius: 10px;
+    text-decoration: none;
+    font-size: 15px;
+    letter-spacing: 1px;
+    transition: opacity .15s;
+  }
+  a.btn:hover { opacity: .85; }
+  .btn-main { background: var(--gold); color: #241b0f; font-weight: 600; }
+  .btn-sub { border: 1px solid var(--line); color: var(--cream); }
+  .note { margin-top: 14px; font-size: 12px; color: var(--dim); line-height: 1.8; }
+  .features {
+    margin-top: 36px;
+    width: 100%;
+    max-width: 560px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  .feat {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px 14px;
+  }
+  .feat b { display: block; font-size: 14px; color: var(--gold); margin-bottom: 6px; letter-spacing: 1px; }
+  .feat span { font-size: 12px; color: var(--dim); line-height: 1.7; }
+  footer { margin-top: 44px; color: var(--dim); font-size: 12px; letter-spacing: 1px; text-align: center; line-height: 2; }
+  footer a { color: var(--gold); text-decoration: none; }
+</style>
+</head>
+<body>
+  <div class="logo">◆ Lofi Room ◆</div>
+  <h1>音乐壁纸播放器<span class="en">LOFI ROOM FOR ANDROID TV</span></h1>
+  <p class="tag">氛围音乐 · 动态壁纸 · 局域网传歌<br>把电视变成你的深夜电台</p>
+
+  <div class="card">
+    <div class="ver">
+      <b id="ver">v1.9</b>
+      <span>Android 5.0+ · 免费无广告</span>
+    </div>
+    <div class="btns">
+      <a class="btn btn-main" href="https://pub-099f4cba787b49ee8c5b91f97b51bb2b.r2.dev/lofiroom/lofiroom-latest.apk">下载 APK（国内镜像）</a>
+      <a class="btn btn-sub" href="https://github.com/ycyx1994/lofi-room/releases/latest/download/lofiroom-latest.apk">下载 APK（GitHub）</a>
+      <a class="btn btn-sub" href="https://github.com/ycyx1994/lofi-room">源码 · 更新日志</a>
+    </div>
+    <p class="note">
+      安装：U 盘拷入电视安装，或电脑执行
+      <code>adb install -r lofiroom-latest.apk</code>（包名 com.lofiroom.tv）。<br>
+      首次运行按 MENU 打开播放列表面板，手机连同一 WiFi 可无线传歌、换背景。
+    </p>
+  </div>
+
+  <div class="features">
+    <div class="feat"><b>🎵 本地曲库</b><span>内置氛围音乐，支持局域网上传自己的歌</span></div>
+    <div class="feat"><b>🌇 动态壁纸</b><span>多套动态背景，支持自定义图片，长按管理</span></div>
+    <div class="feat"><b>📱 扫码传歌</b><span>同一 WiFi 手机扫码，网页端传歌换背景</span></div>
+    <div class="feat"><b>🔄 静默自更新</b><span>多源检测 + 断点续传，同签名自动安装无需操心</span></div>
+    <div class="feat"><b>📺 电视适配</b><span>遥控器全操作，开机沉浸，无广告无追踪</span></div>
+    <div class="feat"><b>🌙 深夜电台</b><span>波形律动 + 氛围视觉，伴你入眠</span></div>
+  </div>
+
+  <footer>
+    LofiRoom TV · v1.9 (versionCode 10)<br>
+    <a href="https://github.com/ycyx1994/lofi-room">github.com/ycyx1994/lofi-room</a>
+  </footer>
+
+<script>
+// 从 R2 镜像拉取最新版本号，失败则保持静态文案
+fetch("https://pub-099f4cba787b49ee8c5b91f97b51bb2b.r2.dev/lofiroom/version.txt")
+  .then(function (r) { return r.ok ? r.text() : Promise.reject(); })
+  .then(function (t) { t = t.trim(); if (/^v?\d+(\.\d+){0,3}$/.test(t)) document.getElementById("ver").textContent = "v" + t.replace(/^v/, ""); })
+  .catch(function () {});
+</script>
+</body>
+</html>
