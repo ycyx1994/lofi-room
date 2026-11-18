@@ -31,7 +31,7 @@ object UpdateChecker {
 
     // ── 版本源 ─────────────────────────────────────────────
     /** 静态镜像站根地址，形如 "https://[MIRROR_HOST]/lofiroom"；留空 = 未部署镜像，自动跳过 ① */
-    private const val MIRROR_BASE = ""
+    private const val MIRROR_BASE = "https://pub-099f4cba787b49ee8c5b91f97b51bb2b.r2.dev/lofiroom"
     private const val GITHUB_API =
         "https://api.github.com/repos/ycyx1994/lofi-room/releases/latest"
     /** 固定名直链：release 流程同时上传 lofiroom-latest.apk，可脱离 API 直接取包 */
