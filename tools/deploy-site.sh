@@ -53,8 +53,12 @@ case "$UPLOAD_METHOD" in
     scp "$WORK/version.txt" "$SSH_USER@$MIRROR_HOST:$MIRROR_DIR/"
     ;;
   wrangler)
-    # Cloudflare Pages 直传示例（[PAGES_PROJECT] 替换为实际项目名）
-    npx wrangler pages deploy "$WORK" --project-name "[PAGES_PROJECT]" --branch main
+    # Cloudflare R2 公共桶（与 UpdateChecker.MIRROR_BASE 对齐）：
+    # 桶名 lofiroom，对象键 lofiroom/{version.txt,notes.txt,lofiroom-latest.apk}
+    BUCKET="${R2_BUCKET:-lofiroom}"
+    for f in version.txt notes.txt lofiroom-latest.apk; do
+      npx wrangler r2 object put "$BUCKET/$MIRROR_DIR_NOSLASH/$f" --file "$WORK/$f" --remote
+    done
     ;;
   *)
     echo "未知 UPLOAD_METHOD: $UPLOAD_METHOD（可选 rsync/scp/wrangler）" >&2
