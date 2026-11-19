@@ -38,7 +38,7 @@ class WallpaperView @JvmOverloads constructor(
     private var switchAtMs = -1L
 
     private val fadeMs = 2000L // #13 稍长的溶解 + smoothstep 缓动，过渡更柔
-    private val holdMs = 600_000L // #14 自动切换间隔 10 分钟
+    private val holdMs = 900_000L // #14 自动切换间隔 15 分钟
     private val kenBurnsMs = 60_000L // 推镜时长（与切换间隔解耦）
     private var dirCurrent = 1f // #13 推镜方向逐张交替（1=推近，-1=拉远）
     private var dirPrev = 1f
