@@ -32,7 +32,7 @@ jobs:
           keyPassword=${{ secrets.LOFIROOM_KEY_PASSWORD }}
           EOF
 
-      - name: 单元测试（UpdateChecker / UpdateScheduler 纯逻辑）
+      - name: 单元测试（UpdateChecker / UpdateScheduler / ImportGuard 纯逻辑）
         run: ./gradlew :app:testReleaseUnitTest --stacktrace
 
       - name: 静态检查（lint，release 变体）
