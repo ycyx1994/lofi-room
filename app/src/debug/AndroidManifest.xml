@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- debug 源集专属清单：只被 debug 变体合并，release 包不含这些声明。
+     AGP 8 用 namespace（app/build.gradle.kts）提供包名，此处不再写 package 属性。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- 发布演练钩子：adb 广播走"三道闸 → 安装"链路（不经网络下载） -->
+        <receiver
+            android:name=".net.UpdateTestReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.lofiroom.tv.UPDATE_TEST" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

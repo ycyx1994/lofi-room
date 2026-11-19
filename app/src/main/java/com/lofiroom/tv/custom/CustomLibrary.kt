@@ -128,9 +128,36 @@ object CustomLibrary {
             opts.inSampleSize = sample
             opts.inJustDecodeBounds = false
             openWallpaper(name)?.use { BitmapFactory.decodeStream(it, null, opts) }
+                ?.let { capWidth(it, targetWidth) }
         }
     } catch (e: Exception) {
         null
+    }
+
+    /**
+     * 把解码结果精确收到目标宽（只缩不放）。
+     *
+     * inSampleSize 只能按 2 的幂跳步，源图常常仍远大于目标宽：内置图是 2560×1440，
+     * 1080p 电视上 targetW = 1920×1.08 ≈ 2073，2560/2 = 1280 < 2073，抽样直接停在 sample=1，
+     * 于是每张 2560×1440 ARGB ≈ 14.7MB，current + previous 双图层常驻 ≈ 29MB——光调 targetW 系数
+     * 对这一档源图是零效果，只有再补一次精缩才真正省下内存。
+     *
+     * 两道保险：与目标宽差 5% 以内不折腾（省一次分配）；宽高比超过 2:1 的全景图跳过
+     * （那类图靠高度铺满屏幕，削宽会把画面糊掉）。
+     */
+    private fun capWidth(bmp: Bitmap, targetWidth: Int): Bitmap {
+        if (targetWidth <= 0 || bmp.width <= targetWidth * 1.05f) return bmp
+        val h = (bmp.height.toLong() * targetWidth / bmp.width).toInt()
+        if (h <= 0 || h < targetWidth / 2) return bmp
+        return try {
+            val scaled = Bitmap.createScaledBitmap(bmp, targetWidth, h, true)
+            if (scaled !== bmp) bmp.recycle()
+            scaled
+        } catch (e: OutOfMemoryError) {
+            bmp // 缩放这步内存不够就退回原图，别把整轮解码拖挂
+        } catch (e: Exception) {
+            bmp
+        }
     }
 
     private fun exifDegrees(f: File): Int = try {
@@ -205,8 +232,7 @@ object CustomLibrary {
     private const val MAX_IMPORT_WALL = 20L * 1024 * 1024      // 与上传上限一致
     private const val MAX_IMPORT_TRACK = 100L * 1024 * 1024
     private const val MAX_IMPORT_META = 2L * 1024 * 1024
-    private val WALL_IMPORT_EXTS = setOf("jpg", "jpeg", "png", "webp")
-    private val TRACK_IMPORT_EXTS = setOf("mp3", "m4a", "wav", "aac", "flac", "ogg")
+    // 扩展名白名单、路径穿越判断、落盘名整形都在 ImportGuard（纯逻辑，可单测）
 
     /**
      * 导入备份 zip。
@@ -229,15 +255,12 @@ object CustomLibrary {
                     entries++
                     if (entries > MAX_IMPORT_ENTRIES) throw IOException("zip 条目过多")
                     if (e.isDirectory) continue
-                    // 归一化：反斜杠、./ 前缀、整目录打包时的 custom/ 前缀
-                    val rel = e.name.replace('\\', '/')
-                        .removePrefix("./")
-                        .removePrefix("custom/")
-                    if (rel.isBlank() || rel.contains("..") || rel.startsWith("/")) {
+                    // 归一化：反斜杠、./ 前缀、整目录打包时的 custom/ 前缀（见 ImportGuard）
+                    val rel = ImportGuard.normalizeEntry(e.name)
+                    if (!ImportGuard.isSafeRel(rel)) {
                         throw IOException("非法路径：${e.name}")
                     }
                     val base = rel.substringAfterLast('/')
-                    val ext = base.substringAfterLast('.', "").lowercase()
                     // 按扩展名归类，任意目录深度都收（兼容 adb 整目录打包、散文件打包）
                     val dest: File = when {
                         rel == "manifest.json" || rel.endsWith("/manifest.json") -> {
@@ -250,11 +273,11 @@ object CustomLibrary {
                             continue
                         }
 
-                        base.isNotBlank() && ext in WALL_IMPORT_EXTS ->
-                            File(File(tmp, "wallpapers"), sanitize(base))
+                        ImportGuard.isAllowedExt(rel, ImportGuard.WALL_EXTS) ->
+                            File(File(tmp, "wallpapers"), ImportGuard.sanitize(base))
 
-                        base.isNotBlank() && ext in TRACK_IMPORT_EXTS ->
-                            File(File(tmp, "music"), sanitize(base))
+                        ImportGuard.isAllowedExt(rel, ImportGuard.TRACK_EXTS) ->
+                            File(File(tmp, "music"), ImportGuard.sanitize(base))
 
                         else -> continue // 目录/白名单外文件跳过
                     }
@@ -393,7 +416,7 @@ object CustomLibrary {
         var i = 0
         val ts = System.currentTimeMillis()
         while (true) {
-            val f = File(dir, "${ts + i}_${(0..9999).random()}_${sanitize(base)}")
+            val f = File(dir, "${ts + i}_${(0..9999).random()}_${ImportGuard.sanitize(base)}")
             if (!f.exists()) return f
             i++
         }
@@ -404,7 +427,7 @@ object CustomLibrary {
     /** 落盘一张自定义壁纸（src 已在目标路径则不搬移），返回合并下标；失败返回 -1 */
     fun addWallpaper(src: File, displayName: String): Int = synchronized(lock) {
         try {
-            val safe = sanitize(displayName)
+            val safe = ImportGuard.sanitize(displayName)
             val dest = File(wallDir, "${System.currentTimeMillis()}_${(0..9999).random()}_$safe")
             if (src.absolutePath != dest.absolutePath) src.copyTo(dest, overwrite = true)
             customWalls = customWalls + dest.name
@@ -439,7 +462,7 @@ object CustomLibrary {
     /** 落盘一首自定义音频，返回合并下标；失败返回 -1 */
     fun addTrack(src: File, title: String, sub: String): Int = synchronized(lock) {
         try {
-            val safe = sanitize(src.name)
+            val safe = ImportGuard.sanitize(src.name)
             val dest = File(musicDir, "${System.currentTimeMillis()}_${(0..9999).random()}_$safe")
             if (src.absolutePath != dest.absolutePath) src.copyTo(dest, overwrite = true)
             val t = Track(
@@ -495,11 +518,6 @@ object CustomLibrary {
         saveMetaLocked()
         notifyChanged()
         true
-    }
-
-    private fun sanitize(name: String): String {
-        val base = name.substringAfterLast('/').substringAfterLast('\\')
-        return base.replace(Regex("[^A-Za-z0-9._\\-\u4e00-\u9fa5]"), "_").ifBlank { "file" }
     }
 
     private fun notifyChanged() {

@@ -1,6 +1,8 @@
 package com.lofiroom.tv.audio
 
+import androidx.annotation.OptIn
 import androidx.media3.common.C
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.audio.TeeAudioProcessor
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -13,6 +15,9 @@ import kotlin.math.sqrt
  * 实时把解码后的 PCM 混成单声道并做 Goertzel 频带分析，
  * 供 VisualizerView 读取（无需任何录音权限）。
  */
+// TeeAudioProcessor.AudioBufferSink 整条链在 media3 1.4.1 里都是 @UnstableApi：
+// 这里显式 opt-in（lint 的 UnsafeOptInUsageError 只认注解，不认编译器 -opt-in 参数）。
+@OptIn(UnstableApi::class)
 class VisualizerTap : TeeAudioProcessor.AudioBufferSink {
 
     companion object {

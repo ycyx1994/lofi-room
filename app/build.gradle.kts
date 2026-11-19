@@ -13,6 +13,20 @@ val keystoreProps = Properties().apply {
 }
 val releaseStoreFile = rootProject.file(keystoreProps.getProperty("storeFile", "keystore/lofiroom-release.jks"))
 
+// 缺正式密钥时 fail-fast：release 一旦回退 debug 签名，产出的包与原包签名不一致，
+// 用户端更新必然撞 INSTALL_FAILED_UPDATE_INCOMPATIBLE（且只在装包那一刻才暴露，比构建失败贵得多）。
+// 只按当前请求的任务名判断，不误伤 assembleDebug / test / lint 等纯 debug 流程；
+// 聚合任务（build/assemble/bundle）会顺带构建 release 变体，一并纳入判断。
+val aggregateTasksIncludingRelease = setOf("build", "assemble", "bundle", "publish")
+val wantsReleaseTask = gradle.startParameter.taskNames.any { name ->
+    name.contains("Release", ignoreCase = true) || name.substringAfterLast(':') in aggregateTasksIncludingRelease
+}
+if (wantsReleaseTask && !releaseStoreFile.exists()) {
+    throw GradleException(
+        "release 构建需要正式密钥：keystore.properties + keystore/lofiroom-release.jks（缺失会产出签名不一致的包）"
+    )
+}
+
 android {
     namespace = "com.lofiroom.tv"
     compileSdk = 36
@@ -21,8 +35,8 @@ android {
         applicationId = "com.lofiroom.tv"
         minSdk = 21
         targetSdk = 34
-        versionCode = 10
-        versionName = "1.9"
+        versionCode = 11
+        versionName = "1.9.1"
     }
 
     signingConfigs {
@@ -38,9 +52,22 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
-            // 优先正式密钥；缺 keystore 的机器回退 debug 占位（签名与正式包不兼容，仅限本机自测）
-            signingConfig = signingConfigs.findByName("lofiroom") ?: signingConfigs.getByName("debug")
+            // R8 代码裁剪 + 资源压缩：APK 33MB 里 dex 未压缩 20.6MB，几乎全是 Compose/media3/zxing
+            // 未被引用到的部分（Compose 调试工具、media3 其它 container、zxing 的 javase 分支）。
+            // 不裁剪时 proguardFiles 只是空转；开启后靠 proguard-rules.pro 的 keep 规则兜住反射入口。
+            isMinifyEnabled = true
+            isShrinkResources = true
+            // 优先正式密钥；缺 keystore 的机器回退 debug 占位（签名与正式包不兼容，仅限本机自测）。
+            // 正常路径上缺失密钥已在文件顶部抛异常，这里保留回退只为 IDE 单变体/工具链直连等
+            // 拿不到 taskNames 的场景不至于配置期就崩，但会打警告，避免静默出「假正式包」。
+            val releaseSigning = signingConfigs.findByName("lofiroom")
+            if (releaseSigning == null) {
+                project.logger.warn(
+                    "⚠️ 未找到正式密钥（keystore.properties + keystore/lofiroom-release.jks），" +
+                        "release 变体将回退 debug 签名 —— 仅限本机自测，禁止分发"
+                )
+            }
+            signingConfig = releaseSigning ?: signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -55,6 +82,16 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+        // media3 的 audio sink / renderer 扩展点在 1.4.1 里标了 @UnstableApi，工程按住它的 API
+        // 就得显式 opt-in；不声明则 lint 的 UnsafeOptInUsageError 会把构建判红（22 个错误全出自这里）。
+        freeCompilerArgs += "-opt-in=androidx.media3.common.util.UnstableApi"
+    }
+
+    lint {
+        // lint 进 CI 门禁（release.yml 的 lintRelease step），这里定死基线口径：
+        // 真有 error 就拦住构建，而不是静默降级成 warning。
+        abortOnError = true
+        checkReleaseBuilds = true
     }
 
     buildFeatures {

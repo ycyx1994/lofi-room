@@ -1,6 +1,8 @@
 package com.lofiroom.tv.ui
 
+import android.content.ComponentCallbacks2
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -40,8 +42,8 @@ class WallpaperView @JvmOverloads constructor(
     private val kenBurnsMs = 60_000L // 推镜时长（与切换间隔解耦）
     private var dirCurrent = 1f // #13 推镜方向逐张交替（1=推近，-1=拉远）
     private var dirPrev = 1f
-    private var zoomStart = 1.02f // #22 当前图出现时的缩放（接续上一张此刻的缩放，切换无跳变）
-    private var prevZoomStart = 1.02f // #22 旧图被换下时的起始缩放
+    private var zoomStart = KEN_BURNS_ZOOM_MIN // #22 当前图出现时的缩放（接续上一张此刻的缩放，切换无跳变）
+    private var prevZoomStart = KEN_BURNS_ZOOM_MIN // #22 旧图被换下时的起始缩放
     private var prevBaseP = 0f // #22 旧图被换下时的推镜进度（不再假设走满 60s）
     private val executor = Executors.newSingleThreadExecutor()
     @Volatile
@@ -50,9 +52,12 @@ class WallpaperView @JvmOverloads constructor(
     private var pendingShow = -1 // #24 应用竞态补救：目标暂存，列表同步/溶解收尾后补发
     private var failStreak = 0 // 连续解码失败计数，完整一轮无一成功则退避
     private var frameCount = 0L
+    /** 帧回调是否已排队：start() 幂等的守卫，重复调用不再挂第二条帧循环 */
+    private var framePending = false
 
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
+            framePending = false // 本帧已被 Choreographer 消费，重投前先复位（stop() 才能真停）
             if (!running) return
             val elapsed = if (switchAtMs > 0) System.currentTimeMillis() - switchAtMs else 0L
             if (switchAtMs > 0 && autoRotate && elapsed > holdMs) advance() // #14 开关打开才自动换
@@ -60,17 +65,45 @@ class WallpaperView @JvmOverloads constructor(
             frameCount++
             val inFade = switchAtMs > 0 && elapsed < fadeMs
             if (inFade || frameCount % 2 == 0L) invalidate()
-            Choreographer.getInstance().postFrameCallback(this)
+            postFrame()
         }
     }
 
-    fun start() {
-        if (names.isEmpty()) loadList()
+    /** 重投下一帧（唯一入口）：已在队列里就不重复 post，避免多次 start() 叠出多条帧循环 */
+    private fun postFrame() {
+        if (framePending) return
+        framePending = true
         Choreographer.getInstance().postFrameCallback(frameCallback)
     }
 
+    /** 启动轮播：幂等，已在跑则只补一次 post；stop() 之后调用可重新拉起来 */
+    fun start() {
+        running = true
+        if (names.isEmpty()) loadList()
+        postFrame()
+    }
+
+    /** 停止轮播：必须真正把帧回调从 Choreographer 摘掉，否则 doFrame 会一直跑（只是不画） */
     fun stop() {
         running = false
+        Choreographer.getInstance().removeFrameCallback(frameCallback)
+        framePending = false
+    }
+
+    /**
+     * 系统内存紧张（ComponentCallbacks2.onTrimMemory / onLowMemory）时回收旧图层。
+     * 只在非溶解期回收：溶解期 previous 正被 onDraw 逐帧引用，此时 recycle 会让正在绘制的位图失效
+     * （Canvas 抛 "trying to use a recycled bitmap"），所以要等 switchAtMs 起 fadeMs 走完再收。
+     * 回收动作一律 post 到主线程：位图引用由绘制线程持有，解码线程不能直接动它。
+     */
+    fun trimMemory() {
+        post {
+            val elapsed = if (switchAtMs >= 0) System.currentTimeMillis() - switchAtMs else Long.MAX_VALUE
+            if (elapsed <= fadeMs) return@post // 溶解进行中：旧图层还在屏上，下一轮 onDraw 会自己收
+            val old = previous ?: return@post
+            previous = null
+            if (old !== current) old.recycle()
+        }
     }
 
     val currentIndex: Int get() = index
@@ -231,9 +264,12 @@ class WallpaperView @JvmOverloads constructor(
     }
 
     private fun decode(name: String): Bitmap? {
-        // #2 按屏幕尺寸算目标宽，CustomLibrary 负责抽样与自定义图 EXIF 转正
+        // #2 按屏幕尺寸算目标宽，CustomLibrary 负责抽样与自定义图 EXIF 转正。
+        // Ken Burns 最大缩放 1.08（见 zoomFor / KEN_BURNS_ZOOM_MAX）→ 只需 1.08 倍余量；
+        // 旧值 1.25 是无谓上采样：1080p 电视按 1.25 解出 2400px 宽（2400×1350 ARGB ≈ 12.9MB/张），
+        // current + previous 常驻 ≈ 26MB，1GB RAM 的盒子上有 OOM 风险，而放大不增加任何清晰度。
         val dm = context.resources.displayMetrics
-        val targetW = (maxOf(dm.widthPixels, dm.heightPixels) * 1.25f).toInt()
+        val targetW = (maxOf(dm.widthPixels, dm.heightPixels) * KEN_BURNS_ZOOM_MAX).toInt()
         return CustomLibrary.decodeWallpaper(name, targetW)
     }
 
@@ -268,7 +304,7 @@ class WallpaperView @JvmOverloads constructor(
 
     /** #22 推镜：从出现时缩放线性驶向本张极值（dir=1 推近至 1.08，dir=-1 拉远至 1.02） */
     private fun zoomFor(progress: Float, dir: Float, start: Float): Float {
-        val end = if (dir > 0) 1.08f else 1.02f
+        val end = if (dir > 0) KEN_BURNS_ZOOM_MAX else KEN_BURNS_ZOOM_MIN
         return start + (end - start) * progress
     }
 
@@ -287,9 +323,35 @@ class WallpaperView @JvmOverloads constructor(
         canvas.drawBitmap(bmp, matrix, paint)
     }
 
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        // 自己吃系统内存压力回调：接线（MainActivity）不必再记得调 trimMemory()，漏接也不会退化
+        context.applicationContext.registerComponentCallbacks(memoryCallbacks)
+    }
+
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
-        running = false
+        stop() // 摘掉帧回调，别让 Choreographer 继续空转
+        context.applicationContext.unregisterComponentCallbacks(memoryCallbacks)
         executor.shutdown()
+    }
+
+    /** 系统内存紧张时回收旧图层（Android 会把 onTrimMemory/onLowMemory 广播到已注册的 callbacks） */
+    private val memoryCallbacks = object : ComponentCallbacks2 {
+        override fun onTrimMemory(level: Int) = trimMemory()
+        override fun onLowMemory() = trimMemory()
+        override fun onConfigurationChanged(newConfig: Configuration) {}
+    }
+
+    private companion object {
+        /**
+         * Ken Burns 推镜的最大缩放 = zoomFor() 里 dir>0 的终点（推近方向）。
+         * 解码余量取它本身：1.08 倍屏幕宽时，最大缩放下正好 1 屏像素 ↔ 1 源像素，
+         * 再多就是纯上采样——不增加清晰度，只让 Bitmap 字节数翻倍。
+         * （旧值 1.25 在 1080p 电视上解出 2400px 宽 ≈ 12.9MB/张，双图层常驻 ≈ 26MB。）
+         */
+        const val KEN_BURNS_ZOOM_MAX = 1.08f
+        /** 拉远方向终点（dir<0），只用于推镜插值起点，不参与解码尺寸 */
+        const val KEN_BURNS_ZOOM_MIN = 1.02f
     }
 }

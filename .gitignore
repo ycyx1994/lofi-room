@@ -28,3 +28,17 @@ lofiroom-backup-*.zip
 # release 签名密钥与口令（勿入库，换机器时手动拷贝 keystore/ 和 keystore.properties）
 keystore.properties
 keystore/
+
+# 真机备份哈希树（iphone5s 全量备份，含个人数据与大量重复哈希文件，绝不能入库）
+iphone5s_backup/
+
+# 与本项目无关的本地工具（checkra1n 越狱工具，约 20MB，仅本机刷机用）
+checkra1n/
+
+# 部署缓存与产物（wrangler R2 的 state/cache、打包输出目录）
+.wrangler/
+dist/
+wall_contact_sheet.png
+
+# iCloud/同步盘产生的重名副本（曾把 "* 2.*" 灌进 app/build，打断 parseDebugLocalResources）
+* 2.*

@@ -134,20 +134,37 @@ object UpdateChecker {
 
     // ── 下载 ───────────────────────────────────────────────
 
+    /** 代际文件名派生：`update-1.8.apk` + tag="g3" → `update-1.8-g3.apk`；tag 为空 = 原样返回 */
+    private fun tagged(target: File, tag: String?): File =
+        if (tag.isNullOrBlank()) target
+        else File(target.parentFile, "${target.nameWithoutExtension}-$tag.${target.extension}")
+
+    /** 本代落地文件路径（调用方与 [download] 用同一套派生规则，保证拿到的是同一个路径） */
+    fun downloadTarget(dir: File, versionName: String, tag: String? = null): File =
+        tagged(File(dir, "update-$versionName.apk"), tag)
+
     /**
      * 多源下载 APK 到 target；进度回调 0-100（-1 = 服务端未报总大小时回调 -1 一次）。
-     * 断点续传：写 target+".part"，Range 续传，206 才续、200 重下；同源最多 [RESUME_TRIES] 次。
+     * 断点续传：写 "<落地文件>.part"，Range 续传，206 才续、200 重下；同源最多 [RESUME_TRIES] 次。
      * 卡死检测：[STALL_MS] 窗口内字节增量 < [STALL_BYTES] 判 stalled，直接换下一个源。
      * cancelled() 返回 true 时中止并清理半成品。
-     * 成功才 rename 为 target；失败保留 .part 供下次同版本续传（[cleanupStale] 负责过期清理），取消清掉。
+     * 成功才 rename 为落地文件；失败保留 .part 供下次同版本续传（[cleanupStale] 负责过期清理），取消清掉。
+     *
+     * [tag] 为"下载代"后缀：非空时落地文件变成 `update-<ver>-<tag>.apk`、中间文件变成
+     * `update-<ver>-<tag>.apk.part`，两次尝试（旧线程未退 vs 新线程）不再指向同一个 inode；
+     * 传 null 保持老命名 `update-<ver>.apk` / `update-<ver>.apk.part`，老调用方行为不变。
+     * 注意：tag 只影响文件名，不影响 [cleanupStale] —— 它按前缀 `update-` + 后缀 `.apk` / `.apk.part`
+     * 匹配，带 tag 的残留同样会被清掉。
      */
     fun download(
         urls: List<String>,
         target: File,
         onProgress: (Int) -> Unit,
         cancelled: () -> Boolean = { false },
+        tag: String? = null,      // 新增；null = 老命名
     ): Boolean {
-        val part = File(target.absolutePath + ".part")
+        val out = tagged(target, tag)                  // tag 非空 → update-<ver>-<tag>.apk
+        val part = File(out.absolutePath + ".part")    // 与 out 同代共存，跨代不共享写句柄
         for (url in urls) {
             var tries = 0
             while (tries < RESUME_TRIES) {
@@ -157,8 +174,13 @@ object UpdateChecker {
                 }
                 when (downloadOnce(url, part, onProgress, cancelled)) {
                     Outcome.DONE -> {
-                        if (target.exists()) target.delete()
-                        val renamed = part.renameTo(target)
+                        // 收尾前再核一次取消：已被作废的代不许落地，免得覆盖/删除新代的同名产物
+                        if (cancelled()) {
+                            part.delete()
+                            return false
+                        }
+                        if (out.exists()) out.delete()
+                        val renamed = part.renameTo(out)
                         if (!renamed) part.delete()
                         return renamed
                     }
@@ -180,7 +202,11 @@ object UpdateChecker {
         return false // 全源失败：保留 .part，下次同版本下载断点续传
     }
 
-    /** 启动清理：删掉过期的 update-*.apk / update-*.apk.part（非当前版本的残留） */
+    /**
+     * 启动清理：删掉过期的 update-*.apk / update-*.apk.part（非当前版本的残留）。
+     * 按"前缀 update- + 后缀 .apk/.apk.part"匹配，因此 [download] 的带 tag 命名
+     * （update-<ver>-<tag>.apk / .apk.part）同样在清理范围内；只保留无 tag 的本版本产物。
+     */
     fun cleanupStale(dir: File, keepVersion: String) {
         val keep = "update-$keepVersion.apk"
         dir.listFiles()?.forEach { f ->

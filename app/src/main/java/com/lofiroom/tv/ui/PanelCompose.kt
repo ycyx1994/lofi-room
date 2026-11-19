@@ -582,9 +582,9 @@ private fun DeleteWallDialog(
                 .border(1.dp, PanelStroke, RoundedCornerShape(20.dp))
                 .padding(22.dp)
         ) {
-            Text("删除这张自定义背景？", color = Cream, fontFamily = serif, fontSize = 17.sp)
+            Text(stringResource(R.string.panel_delete_title), color = Cream, fontFamily = serif, fontSize = 17.sp)
             Spacer(Modifier.height(8.dp))
-            Text("删除后可在 H5 管理页重新上传", color = CreamDim, fontFamily = sans, fontSize = 10.sp, letterSpacing = 0.2.sp)
+            Text(stringResource(R.string.panel_delete_body), color = CreamDim, fontFamily = sans, fontSize = 10.sp, letterSpacing = 0.2.sp)
             Spacer(Modifier.height(18.dp))
             Row {
                 Box(
@@ -597,7 +597,7 @@ private fun DeleteWallDialog(
                         .cellFrame(focused = cancelFocused, applied = false),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("取消", color = Cream, fontFamily = sans, fontSize = 13.sp)
+                    Text(stringResource(R.string.panel_delete_cancel), color = Cream, fontFamily = sans, fontSize = 13.sp)
                 }
                 Spacer(Modifier.width(14.dp))
                 Box(
@@ -609,7 +609,7 @@ private fun DeleteWallDialog(
                         .cellFrame(focused = okFocused, applied = false),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("删除", color = Color(0xFFE08078), fontFamily = sans, fontSize = 13.sp)
+                    Text(stringResource(R.string.panel_delete_confirm), color = Color(0xFFE08078), fontFamily = sans, fontSize = 13.sp)
                 }
             }
         }

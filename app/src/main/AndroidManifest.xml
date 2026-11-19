@@ -17,6 +17,7 @@
         android:banner="@drawable/tv_banner"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
 
@@ -49,14 +50,9 @@
             android:name=".net.UpdateResultReceiver"
             android:exported="false" />
 
-        <!-- 发布演练钩子：adb 广播走"三道闸 → 安装"链路（不经网络下载） -->
-        <receiver
-            android:name=".net.UpdateTestReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="com.lofiroom.tv.UPDATE_TEST" />
-            </intent-filter>
-        </receiver>
+        <!-- 发布演练钩子（.net.UpdateTestReceiver）仅存在于 debug 源集：
+             声明在 app/src/debug/AndroidManifest.xml，实现类在 app/src/debug/java/...，
+             release 包既无组件声明也无字节码，外部无法用 am broadcast 触发 -->
     </application>
 
 </manifest>

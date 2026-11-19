@@ -55,6 +55,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 
 class MainActivity : ComponentActivity() {
@@ -83,6 +84,7 @@ class MainActivity : ComponentActivity() {
     private val playingIndexState = mutableIntStateOf(0)
     private val playingState = mutableStateOf(true)
     private val appliedWallState = mutableIntStateOf(0)
+    private val wallCountState = mutableIntStateOf(0) // 壁纸总数 → Compose 状态（H5 增删后即时同步）
     private val autoRotateState = mutableStateOf(false)
     private val thumbs = mutableStateMapOf<String, Bitmap>()
     private val tabsFocus = FocusRequester()
@@ -103,7 +105,12 @@ class MainActivity : ComponentActivity() {
     private var updateState: UpdateState = UpdateState.Idle  // 更新状态机（B5）
     private val updateScheduler = UpdateScheduler()          // A2 节流/退避/网络合并（纯逻辑）
     private var latestRelease: ReleaseInfo? = null      // 有新版时非空（按钮切为"下载"，含下载源列表）
-    private var downloadCancelled = false               // 下载线程取消钩子（再按按钮置 true）
+    /**
+     * 下载代令牌：取消 = +1（旧线程的 alive() 立即为假），每次发起下载 = +1 取本代号。
+     * 取代旧的共享取消布尔 —— 那个布尔会被新一次下载"清 false"，
+     * 导致「取消 → 立刻再点」时旧线程读到 false 继续往同一个文件里写。
+     */
+    private val downloadGen = AtomicInteger(0)
     private var activityResumed = false                 // 仅前台时跑退避重试
     private val updatePrefs by lazy { getSharedPreferences("updates", MODE_PRIVATE) }
     private var qrOverlay: View? = null // OK 全屏二维码遮罩（CUSTOM 页签）
@@ -189,9 +196,10 @@ class MainActivity : ComponentActivity() {
         wallpaper.autoRotate = prefs.getBoolean("auto_rotate", false)
         wallpaper.startIndex = prefs.getInt("wallpaper_index", 0)
         autoRotateState.value = wallpaper.autoRotate
-        wallpaper.onWallpaperChange = { index, _ ->
+        wallpaper.onWallpaperChange = { index, total ->
             rotateCaption(index)
             appliedWallState.intValue = index // #compose-tv-migration 刷新"已应用"金框
+            wallCountState.intValue = total   // 壁纸总数进 Compose 状态：宫格数量随 H5 增删即时变化
             if (!firstWallReady) { // #12 首图就绪：满足最短展示时长后撤遮罩
                 firstWallReady = true
                 val wait = (1100 - (System.currentTimeMillis() - bootAtMs)).coerceAtLeast(0)
@@ -209,8 +217,14 @@ class MainActivity : ComponentActivity() {
         CustomLibrary.onLibraryChanged = {
             engine.refreshItems()
             wallpaper.reload()
+            // reload() 是后台线程异步换名单：紧跟其后读 count 可能仍是旧值，
+            // 这里先同步一次（拿不到新值时靠 reload 内部的 onWallpaperChange 校正）
+            wallCountState.intValue = wallpaper.count
             customTracksStateSync()
-            handler.post { warmThumbs() }
+            handler.post {
+                wallCountState.intValue = wallpaper.count // 缩略图重建的同一次流程里再对一次
+                warmThumbs()
+            }
         }
 
         // #23 局域网管理服务：8788 起，二维码 = http://<ip>:<port>/t/<token>/
@@ -286,7 +300,9 @@ class MainActivity : ComponentActivity() {
     /** 全屏绘制到刘海/状态栏安全区，避免手机横屏左侧出现系统黑边。 */
     private fun configureWindow() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        if (Build.VERSION.SDK_INT >= 27) {
+        // layoutInDisplayCutoutMode 是 API 28 才有的字段（27 只是引入 cutout API 本身），
+        // 在 27 上写它会 NoSuchFieldError，故门槛取 28。
+        if (Build.VERSION.SDK_INT >= 28) {
             val attrs = window.attributes
             attrs.layoutInDisplayCutoutMode =
                 if (Build.VERSION.SDK_INT >= 30) {
@@ -322,6 +338,12 @@ class MainActivity : ComponentActivity() {
                     or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
                 )
         }
+    }
+
+    /** 焦点回来时补一次沉浸式（注释承诺的重试点：MIUI 部分机型 insetsController 首次未就绪） */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideSystemBars()
     }
 
     // ── 文字联动 ────────────────────────────────────────────
@@ -531,7 +553,7 @@ class MainActivity : ComponentActivity() {
                     engine.playIndex(i)
                     togglePanel()
                 },
-                wallCount = wallpaper.count,
+                wallCount = wallCountState.intValue,
                 thumbOf = { i -> wallpaper.nameAt(i)?.let { thumbs[it] } },
                 appliedIndex = appliedWallState.intValue,
                 onWallClick = { i ->
@@ -639,7 +661,7 @@ class MainActivity : ComponentActivity() {
     private fun onUpdateAction() {
         when {
             updateState is UpdateState.Downloading -> { // D2 再按 = 取消
-                downloadCancelled = true
+                downloadGen.incrementAndGet() // 作废当前代：旧线程的 cancelled() 立即为真
                 applyUpdateState(UpdateState.Idle)
             }
             latestRelease != null -> downloadUpdate(latestRelease!!)
@@ -718,30 +740,50 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** B 层下载：多源断点续传 → 三道闸 → C 层安装；下载中再按按钮可取消 */
+    /** B 层下载：多源断点续传 → 三道闸 → C 层安装；下载中再按按钮可取消（代令牌，不再共享布尔） */
     private fun downloadUpdate(rel: ReleaseInfo) {
         if (updateState is UpdateState.Downloading) return
-        downloadCancelled = false
+        val gen = downloadGen.incrementAndGet()   // 本代号：取消或下一次下载都会把它推进
+        val alive = { gen == downloadGen.get() }  // 本代是否仍然有效（取消后立即为 false）
+        val tag = "g$gen"                         // 本代独占文件名后缀：.apk / .apk.part 都不与别代同名
         applyUpdateState(UpdateState.Downloading(rel.versionName, -1))
         Thread {
             val dir = getExternalFilesDir(null) ?: filesDir
-            val apk = File(dir, "update-${rel.versionName}.apk")
+            val base = File(dir, "update-${rel.versionName}.apk")           // 老命名基名（供 tag 派生）
+            val apk = UpdateChecker.downloadTarget(dir, rel.versionName, tag) // 与 download 落地文件同一路径
             val ok = UpdateChecker.download(
-                rel.apkUrls, apk,
-                { pct -> handler.post { if (!downloadCancelled) applyUpdateState(UpdateState.Downloading(rel.versionName, pct)) } },
-                cancelled = { downloadCancelled },
+                rel.apkUrls, base,
+                { pct ->
+                    handler.post {
+                        if (!alive()) return@post // 已取消/已被新代接管：不覆盖新代进度
+                        applyUpdateState(UpdateState.Downloading(rel.versionName, pct))
+                    }
+                },
+                cancelled = { !alive() },
+                tag = tag,
             )
             handler.post {
-                if (downloadCancelled) { downloadCancelled = false; return@post } // 用户取消：保持 Idle
+                // 取消或被新代取代：本代 .part 已由 download 的 CANCELLED 分支删掉，
+                // 这里直接退出，绝不删除/覆盖别的代的产物
+                if (!alive()) return@post
                 if (!ok) {
+                    apk.delete() // 本代半成品清干净（带 tag 的 .part 无法跨代续传，留着只是垃圾）
+                    File(apk.absolutePath + ".part").delete()
                     applyUpdateState(UpdateState.Failed(UpdateState.Reason.Download))
                     return@post
                 }
                 applyUpdateState(UpdateState.Verifying)
                 // B4 三道闸 fail-closed：包名/签名/版本回滚任一不过即拦截（异常也拒收）
-                if (!UpdateChecker.verify(this, apk) || !UpdateChecker.sameSigner(this, apk)) {
-                    apk.delete()
+                if (!UpdateChecker.verify(this, apk)) {
+                    apk.delete() // 本代产物，删它不影响其它代
                     applyUpdateState(UpdateState.Failed(UpdateState.Reason.Verify))
+                    return@post
+                }
+                if (!UpdateChecker.sameSigner(this, apk)) {
+                    // 签名不一致 = 包来自别的证书（旧 debug 包 / 换了 keystore 重建），
+                    // 自动安装一定撞 INSTALL_FAILED_UPDATE_INCOMPATIBLE，只能引导手动覆盖安装
+                    apk.delete()
+                    applyUpdateState(UpdateState.Failed(UpdateState.Reason.Signature))
                     return@post
                 }
                 if (!UpdateChecker.notOlder(this, apk)) {
@@ -846,6 +888,7 @@ class MainActivity : ComponentActivity() {
                     UpdateState.Reason.Check -> getString(R.string.update_check_failed)
                     UpdateState.Reason.Download -> getString(R.string.update_download_failed)
                     UpdateState.Reason.Verify -> getString(R.string.update_verify_failed)
+                    UpdateState.Reason.Signature -> getString(R.string.update_sig_mismatch)
                     UpdateState.Reason.NotNewer -> getString(R.string.update_not_newer)
                     UpdateState.Reason.Install -> getString(R.string.update_install_failed)
                 }
@@ -863,6 +906,9 @@ class MainActivity : ComponentActivity() {
     }
 
     /** #compose-tv-migration 面板打开时只拦 BACK/MENU；方向与确认键交给 Compose 焦点系统 */
+    // ComponentActivity.dispatchKeyEvent 带 @RestrictTo(LIBRARY_GROUP_PREFIX)：这里是标准覆写 +
+    // super 透传，不是跨库私有调用，lint 的 RestrictedApi 属误报，按站点抑制。
+    @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         // #23 全屏二维码遮罩：OK/BACK 收起，其余键吞掉防穿透
         if (qrOverlay != null) {

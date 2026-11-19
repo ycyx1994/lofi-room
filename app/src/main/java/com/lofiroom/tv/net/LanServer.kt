@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import com.lofiroom.tv.custom.CustomLibrary
+import com.lofiroom.tv.custom.ImportGuard
 import fi.iki.elonen.NanoHTTPD
 import fi.iki.elonen.NanoHTTPD.IHTTPSession
 import fi.iki.elonen.NanoHTTPD.Method
@@ -377,8 +378,9 @@ class LanServer(
         private const val MAX_TRACK_BYTES = 100L * 1024 * 1024
         private const val MAX_IMPORT_ZIP_BYTES = 512L * 1024 * 1024 // 导入备份 zip 上限
         private const val FORM_OVERHEAD = 1L * 1024 * 1024 // multipart 边界/字段余量
-        private val WALL_EXTS = setOf("jpg", "jpeg", "png", "webp")
-        private val TRACK_EXTS = setOf("mp3", "m4a", "wav", "aac", "flac", "ogg")
+        // 白名单唯一来源在 ImportGuard（导入 zip 与上传共用一套），此处只做别名，防止两处漂移
+        private val WALL_EXTS = ImportGuard.WALL_EXTS
+        private val TRACK_EXTS = ImportGuard.TRACK_EXTS
 
         /** 局域网 IPv4（非回环、接口启用），无网返回 null */
         /** #23 只认真局域网卡：wlan（WiFi）/eth（有线）/usb·rndis（USB 网络共享）/ap（热点）。

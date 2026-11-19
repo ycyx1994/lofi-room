@@ -20,11 +20,15 @@ object QrCode {
         )
         val matrix = QRCodeWriter().encode(text, com.google.zxing.BarcodeFormat.QR_CODE, sizePx, sizePx, hints)
         val bmp = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
-        for (x in 0 until sizePx) {
-            for (y in 0 until sizePx) {
-                bmp.setPixel(x, y, if (matrix.get(x, y)) Color.BLACK else Color.WHITE)
+        // 整块像素一次写回：640×640 逐个 setPixel 是 41 万次 JNI 往返，改成 IntArray + setPixels 只走 1 次
+        val argb = IntArray(sizePx * sizePx)
+        for (y in 0 until sizePx) {
+            val row = y * sizePx
+            for (x in 0 until sizePx) {
+                argb[row + x] = if (matrix.get(x, y)) Color.BLACK else Color.WHITE
             }
         }
+        bmp.setPixels(argb, 0, sizePx, 0, 0, sizePx, sizePx)
         bmp
     } catch (e: Exception) {
         null

@@ -37,7 +37,8 @@ sealed interface UpdateState {
     enum class Reason {
         Check,     // 检测失败：网络不可达 / 响应非法（正则白名单拒收）
         Download,  // 全部下载源失败（含断流续传耗尽、卡死换源后仍失败）
-        Verify,    // 包名不一致 / 签名不一致 / APK 解析失败（fail-closed 拦截）
+        Verify,    // 包名不一致 / APK 解析失败（fail-closed 拦截）
+        Signature, // 签名与本机安装不一致：包来自其它证书，只能手动卸载重装
         NotNewer,  // 归档 versionCode 低于当前安装（镜像未更新导致的回滚，拦截）
         Install,   // session 与系统安装器均未能唤起
     }

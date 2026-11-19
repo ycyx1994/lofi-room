@@ -3,11 +3,13 @@ package com.lofiroom.tv.audio
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.common.audio.AudioProcessor
@@ -22,6 +24,9 @@ import com.lofiroom.tv.data.mediaUri
  * 音频引擎：ExoPlayer + 自定义 AudioSink 挂 TeeAudioProcessor，
  * 把解码 PCM 旁路给 VisualizerTap 做波形分析。
  */
+// DefaultAudioSink / TeeAudioProcessor / AudioSink 在 media3 1.4.1 里是 @UnstableApi，
+// 显式 opt-in（lint 只认注解，不认编译器 -opt-in 参数）。
+@OptIn(UnstableApi::class)
 class AudioEngine(context: Context, private val tap: VisualizerTap) {
 
     interface Listener {

@@ -5,4 +5,7 @@
     <color name="cream">#F6F0E6</color>
     <color name="cream_dim">#C8BCA9</color>
     <color name="gold">#D8B57E</color>
+    <!-- 自适应启动图标背景：取样自旧启动图标 mipmap-xxxhdpi/ic_launcher.png 的底板色 (17,23,33)，
+         保证 API 26+ 的自适应图标与 API 21~25 的 PNG 图标观感一致 -->
+    <color name="ic_launcher_background">#111721</color>
 </resources>
