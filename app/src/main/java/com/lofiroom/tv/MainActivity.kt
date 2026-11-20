@@ -1084,6 +1084,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        // P1：作废在途下载/校验代（alive() 立即为 false）：销毁后不再继续 verify/安装，下载线程经 cancelled 快速退出
+        downloadGen.incrementAndGet()
         // #23 先停局域网服务再释放引擎，避免 H5 请求踩到已释放的播放器
         CustomLibrary.onLibraryChanged = null
         netCallback?.let {

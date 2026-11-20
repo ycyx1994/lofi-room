@@ -13,6 +13,7 @@ import android.view.Choreographer
 import android.view.View
 import com.lofiroom.tv.custom.CustomLibrary
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 
 /**
  * 壁纸轮播：assets/wallpapers/ 读图，crossfade 过渡 + 缓慢 Ken Burns 推镜。
@@ -112,9 +113,21 @@ class WallpaperView @JvmOverloads constructor(
     /** #17 壁纸文件名（供面板缩略图解码，与轮播顺序一致；自定义项带 "custom/" 前缀） */
     fun nameAt(i: Int): String? = names.getOrNull(i)
 
+    /** P0：onDetachedFromWindow 后线程池已 shutdown，裸 execute 抛 RejectedExecutionException 会崩溃；
+     *  统一走这里，提交失败返回 false 由调用方复位标志 */
+    private fun submit(block: Runnable): Boolean {
+        if (executor.isShutdown) return false
+        return try {
+            executor.execute(block)
+            true
+        } catch (e: RejectedExecutionException) {
+            false
+        }
+    }
+
     /** #23 自定义壁纸增删后重载列表：按文件名保住当前显示，被删则切第一张 */
     fun reload() {
-        executor.execute {
+        submit {
             val found = CustomLibrary.wallpaperNames
             post {
                 if (!running) return@post
@@ -152,7 +165,7 @@ class WallpaperView @JvmOverloads constructor(
         pendingShow = -1 // 成交的 show 是最新意图，作废更早的暂存
         advancing = true
         val targetName = names[target]
-        executor.execute {
+        val submitted = submit {
             val bmp = decode(targetName)
             post {
                 advancing = false
@@ -165,7 +178,11 @@ class WallpaperView @JvmOverloads constructor(
                     show(t)
                     return@post
                 }
-                if (!running || bmp == null) return@post
+                if (!running) return@post
+                if (bmp == null) {
+                    onWallpaperChange?.invoke(index, names.size) // P1：解码失败回校正回调，撤销调用方的乐观置位
+                    return@post
+                }
                 // #22 推镜接续：旧图从真实进度续行，新图从旧图此刻缩放出发，消除切换跳变
                 prevBaseP = ((System.currentTimeMillis() - switchAtMs).coerceAtLeast(0L)
                     .toFloat() / kenBurnsMs).coerceIn(0f, 1f)
@@ -182,18 +199,22 @@ class WallpaperView @JvmOverloads constructor(
                 onWallpaperChange?.invoke(index, names.size)
             }
         }
+        if (!submitted) advancing = false // P0：View 已销毁提交失败，复位防重入标志，避免后续 show 永久卡死
     }
 
     /** #24 补发暂存的应用意图：列表同步后把用户点过的目标切过去 */
     private fun replayPending() {
         val t = pendingShow
         pendingShow = -1 // 无论成败都清空：目标仍不在列表（已删除/非法）即作废，防旧意图在后续 reload 时误切
-        if (t < 0 || t !in names.indices) return // 没有暂存或列表还没到位
+        if (t < 0 || t !in names.indices) {
+            if (t >= 0) onWallpaperChange?.invoke(index, names.size) // P1：应用意图被作废时同步校正，防金框停在不存在的目标上
+            return // 没有暂存或列表还没到位
+        }
         show(t)
     }
 
     private fun loadList() {
-        executor.execute {
+        submit {
             // #9 目录列举与首图解码都放后台线程，避免主线程磁盘 I/O
             // #23 走合并库：内置 assets + 自定义 custom/（命名约定见 CustomLibrary）
             val found = CustomLibrary.wallpaperNames
@@ -225,7 +246,7 @@ class WallpaperView @JvmOverloads constructor(
         advancing = true
         val next = (index + 1) % names.size
         val nextName = names[next] // 主线程捕获，后台线程不读 names
-        executor.execute {
+        val submitted = submit {
             val bmp = decode(nextName)
             post {
                 advancing = false // #1 无论成败都复位标志
@@ -243,6 +264,7 @@ class WallpaperView @JvmOverloads constructor(
                     failStreak++
                     // #9 整轮全失败则退避 holdMs，防止坏资产导致忙循环
                     if (failStreak >= names.size) switchAtMs = System.currentTimeMillis()
+                    onWallpaperChange?.invoke(index, names.size) // P1：失败推进也同步外部状态，防金框/基准漂移
                     return@post
                 }
                 failStreak = 0
@@ -261,6 +283,7 @@ class WallpaperView @JvmOverloads constructor(
                 onWallpaperChange?.invoke(index, names.size)
             }
         }
+        if (!submitted) advancing = false // P0：同 show()，提交失败复位防重入标志
     }
 
     private fun decode(name: String): Bitmap? {

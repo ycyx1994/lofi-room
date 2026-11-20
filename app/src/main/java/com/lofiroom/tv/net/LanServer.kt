@@ -3,6 +3,7 @@ package com.lofiroom.tv.net
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.util.Log
 import com.lofiroom.tv.custom.CustomLibrary
 import com.lofiroom.tv.custom.ImportGuard
 import fi.iki.elonen.NanoHTTPD
@@ -20,6 +21,8 @@ import java.net.NetworkInterface
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * #23 局域网 H5 管理页服务：NanoHTTPD 内嵌 HTTP。
@@ -77,11 +80,36 @@ class LanServer(
 
     // ── NanoHTTPD 实现 ─────────────────────────────────────
 
+    // P0 连接配额：NanoHTTPD 每连接一线程且无上限，靠入口计数闸控制瞬时并发
+    private val activeConns = AtomicInteger()
+    private val ipConns = ConcurrentHashMap<String, AtomicInteger>()
+
     private inner class Impl(port: Int) : NanoHTTPD(port) {
-        override fun serve(session: IHTTPSession): Response = try {
-            route(session)
-        } catch (e: Exception) {
-            json(Status.INTERNAL_ERROR, JSONObject().put("error", e.toString()))
+        override fun serve(session: IHTTPSession): Response {
+            // P0 全局并发闸：超上限立即 503，不进业务逻辑；finally 递减保证计数复位
+            if (activeConns.incrementAndGet() > MAX_CONCURRENT) {
+                activeConns.decrementAndGet()
+                return busy()
+            }
+            // P0 单 IP 并发闸：NanoHTTPD 不暴露 accept 钩子，在 serve 入口按 remoteIpAddress 计数，
+            // 超限请求在 parseBody/业务逻辑之前被拒（效果等价 accept 层限流）。LAN 客户端 IP 数有限，条目常驻避免计数竞态
+            val ip = session.remoteIpAddress ?: "unknown"
+            val ipCnt = ipConns.computeIfAbsent(ip) { AtomicInteger() }
+            if (ipCnt.incrementAndGet() > MAX_CONCURRENT_PER_IP) {
+                ipCnt.decrementAndGet()
+                activeConns.decrementAndGet()
+                return busy()
+            }
+            try {
+                return route(session)
+            } catch (e: Exception) {
+                // P2：异常细节（内部路径/类名）只留本地日志，对外固定文案
+                Log.w(TAG, "serve error", e)
+                return json(Status.INTERNAL_ERROR, JSONObject().put("error", "internal error"))
+            } finally {
+                ipCnt.decrementAndGet()
+                activeConns.decrementAndGet()
+            }
         }
     }
 
@@ -142,8 +170,9 @@ class LanServer(
                 }
 
                 seg[1] == "tracks" && seg.size == 3 && method == Method.PATCH -> {
-                    val title = session.parms["title"] ?: ""
-                    val sub = session.parms["sub"] ?: ""
+                    // P2：title/sub 限长 200（超长截断），防 MB 级字符串灌进 meta.json
+                    val title = (session.parms["title"] ?: "").take(MAX_TEXT_LEN)
+                    val sub = (session.parms["sub"] ?: "").take(MAX_TEXT_LEN)
                     if (CustomLibrary.renameTrack(id, title, sub)) ok() else bad("仅可重命名自定义曲目")
                 }
 
@@ -236,7 +265,8 @@ class LanServer(
             tmp.outputStream().use { CustomLibrary.exportZip(it, part) }
         } catch (e: Exception) {
             tmp.delete()
-            return bad("导出失败：$e")
+            Log.w(TAG, "export error", e) // P2：异常细节只留本地日志，不外泄内部路径/类名
+            return bad("导出失败")
         }
         val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
         val label = when (part) {
@@ -269,6 +299,7 @@ class LanServer(
     private fun importBackup(session: IHTTPSession): Response {
         val len = session.headers["content-length"]?.toLongOrNull() ?: -1L
         if (len > MAX_IMPORT_ZIP_BYTES + FORM_OVERHEAD) return payloadTooLarge()
+        quotaGuard()?.let { return it } // P1 写盘前配额闸（临时落盘/解压均在写盘，提前拒收）
         val files = mutableMapOf<String, String>()
         session.parseBody(files)
         val tmp = File(files["file"] ?: return bad("缺少文件字段 file"))
@@ -285,7 +316,11 @@ class LanServer(
                     .put("mode", if (replace) "replace" else "merge")
             )
         } catch (e: Exception) {
-            bad(e.message ?: "导入失败")
+            // P2：细节只留本地日志。ImportGuard/CustomLibrary 的校验文案（zip 条目过多等）可回显；
+            // 其包装异常（"导入失败：$e"）含内部类名/路径，收敛为固定文案
+            Log.w(TAG, "importBackup error", e)
+            val msg = e.message ?: "导入失败"
+            bad(if (msg.startsWith("导入失败：")) "导入失败" else msg)
         }
     }
 
@@ -294,11 +329,13 @@ class LanServer(
     private fun uploadWallpaper(session: IHTTPSession): Response {
         val len = session.headers["content-length"]?.toLongOrNull() ?: -1L
         if (len > MAX_WALL_BYTES + FORM_OVERHEAD) return payloadTooLarge()
+        quotaGuard()?.let { return it } // P1 写盘前配额闸
         val files = mutableMapOf<String, String>()
         session.parseBody(files)
         val tmp = File(files["file"] ?: return bad("缺少文件字段 file"))
         if (tmp.length() > MAX_WALL_BYTES) return payloadTooLarge()
-        val origName = session.parms["filename"]?.ifBlank { null } ?: tmp.name
+        // P2：文件名限长 200，截断保留扩展名（否则会破坏后缀白名单判断）
+        val origName = capFileName(session.parms["filename"]?.ifBlank { null } ?: tmp.name)
         val ext = origName.substringAfterLast('.', "").lowercase()
         if (ext !in WALL_EXTS) return bad("仅支持 jpg/png/webp")
         // BitmapFactory 边界校验：损坏文件直接拒收
@@ -315,17 +352,20 @@ class LanServer(
     private fun uploadTrack(session: IHTTPSession): Response {
         val len = session.headers["content-length"]?.toLongOrNull() ?: -1L
         if (len > MAX_TRACK_BYTES + FORM_OVERHEAD) return payloadTooLarge()
+        quotaGuard()?.let { return it } // P1 写盘前配额闸
         val files = mutableMapOf<String, String>()
         session.parseBody(files)
         val tmp = File(files["file"] ?: return bad("缺少文件字段 file"))
         if (tmp.length() > MAX_TRACK_BYTES) return payloadTooLarge()
-        val origName = session.parms["filename"]?.ifBlank { null } ?: tmp.name
+        // P2：文件名限长 200，截断保留扩展名（否则会破坏后缀白名单判断）
+        val origName = capFileName(session.parms["filename"]?.ifBlank { null } ?: tmp.name)
         val ext = origName.substringAfterLast('.', "").lowercase()
         if (ext !in TRACK_EXTS) return bad("仅支持 mp3/m4a/wav/aac/flac/ogg")
+        // P2：title/sub 限长 200（超长截断），防 MB 级字符串灌进 meta.json
         val index = CustomLibrary.addTrack(
             tmp,
-            session.parms["title"] ?: "",
-            session.parms["sub"] ?: ""
+            (session.parms["title"] ?: "").take(MAX_TEXT_LEN),
+            (session.parms["sub"] ?: "").take(MAX_TEXT_LEN)
         )
         return if (index >= 0) json(JSONObject().put("ok", true).put("id", index))
         else storageFull()
@@ -339,12 +379,54 @@ class LanServer(
 
     private fun payloadTooLarge() = json(Status.PAYLOAD_TOO_LARGE, JSONObject().put("error", "文件过大"))
 
-    private fun storageFull(): Response {
+    private fun storageFull(msg: String = "存储写入失败"): Response {
         val status = object : Response.IStatus {
             override fun getDescription() = "507 Insufficient Storage"
             override fun getRequestStatus() = 507
         }
-        return json(status, JSONObject().put("error", "存储写入失败"))
+        return json(status, JSONObject().put("error", msg))
+    }
+
+    // ── P0/P1 加固辅助 ─────────────────────────────────────
+
+    /** P0 过载快拒：503 + Retry-After，让客户端退避 */
+    private fun busy(): Response {
+        val r = json(Status.SERVICE_UNAVAILABLE, JSONObject().put("error", "server busy"))
+        r.addHeader("Retry-After", "3")
+        return r
+    }
+
+    /**
+     * P1 写盘前配额闸：(a) 目标卷可用空间 < 256MB 拒收；(b) custom 壁纸+音乐现有总量 ≥ 1.5GB 拒收新增。
+     * 判据取"现有状态"而非叠加上传量估算——replace 模式导入会整体替换旧内容，按增量估算会误拒恢复。
+     * 返回 null 放行，否则为 507 响应（文案区分两种原因）。
+     */
+    private fun quotaGuard(): Response? {
+        // 目标卷取 getExternalFilesDir（系统保证已创建；custom 目录首写前不存在，不能用它取可用空间）
+        val volume = context.getExternalFilesDir(null) ?: context.filesDir
+        if (volume.usableSpace < MIN_FREE_BYTES) return storageFull("存储空间不足（可用空间低于 256MB）")
+        if (customBytes() >= CUSTOM_QUOTA_BYTES) return storageFull("自定义壁纸/音乐已达 1.5GB 配额上限")
+        return null
+    }
+
+    /** custom 壁纸+音乐现有总量（镜像 CustomLibrary 的 rootDir 解析：external/custom 或内部 files/custom） */
+    private fun customBytes(): Long {
+        val root = context.getExternalFilesDir(null)?.resolve("custom") ?: File(context.filesDir, "custom")
+        return dirBytes(File(root, "wallpapers")) + dirBytes(File(root, "music"))
+    }
+
+    private fun dirBytes(dir: File): Long {
+        var total = 0L
+        dir.listFiles()?.forEach { f -> total += if (f.isDirectory) dirBytes(f) else f.length() }
+        return total
+    }
+
+    /** P2：文件名限长 200，截断时保留扩展名（防止截断破坏后缀白名单判断） */
+    private fun capFileName(name: String): String {
+        if (name.length <= MAX_TEXT_LEN) return name
+        val dot = name.lastIndexOf('.')
+        val ext = if (dot in 1 until name.length - 1) name.substring(dot) else ""
+        return if (ext.length < MAX_TEXT_LEN) name.take(MAX_TEXT_LEN - ext.length) + ext else name.take(MAX_TEXT_LEN)
     }
 
     private fun json(o: JSONObject): Response = json(Status.OK, o)
@@ -352,32 +434,41 @@ class LanServer(
     private fun json(status: Response.IStatus, o: JSONObject): Response {
         val r = NanoHTTPD.newFixedLengthResponse(status, "application/json; charset=utf-8", o.toString())
         r.addHeader("Cache-Control", "no-store")
-        r.addHeader("Access-Control-Allow-Origin", "*")
+        // P1：H5 与 API 同源（同 host:port），不下发 ACAO 通配，避免跨域读接口
         return r
     }
 
     private fun plain(status: Response.IStatus, msg: String): Response {
         val r = NanoHTTPD.newFixedLengthResponse(status, "text/plain; charset=utf-8", msg)
-        r.addHeader("Access-Control-Allow-Origin", "*")
+        // P1：同源无需 CORS，不下发 ACAO
         return r
     }
 
     private fun corsPreflight(): Response {
         val r = NanoHTTPD.newFixedLengthResponse(Status.NO_CONTENT, "text/plain", "")
-        r.addHeader("Access-Control-Allow-Origin", "*")
+        // P1：删除 ACAO 通配（同源不需要）；保留其余预检头
         r.addHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
         r.addHeader("Access-Control-Allow-Headers", "Content-Type")
         return r
     }
 
     companion object {
+        private const val TAG = "LanServer"
         private const val START_PORT = 8788
         private const val LAST_PORT = 8792
-        private const val SOCKET_READ_TIMEOUT = 50_000 // 大文件 Wi-Fi 上传留足读超时
+        // P0：SO_TIMEOUT 是"每次 read"的超时——50s 时 slow-drip（每 40s 发 1 字节）即可长期占住连接线程，
+        // 收紧到 10s 后滴注流必然断连。权衡：极慢 Wi-Fi 上大文件上传若 10s 内凑不出一次 read 会被切断，
+        // 但 LAN 正常上传持续有数据到达（每次 read 重置计时），可接受
+        private const val SOCKET_READ_TIMEOUT = 10_000
         private const val MAX_WALL_BYTES = 20L * 1024 * 1024
         private const val MAX_TRACK_BYTES = 100L * 1024 * 1024
         private const val MAX_IMPORT_ZIP_BYTES = 512L * 1024 * 1024 // 导入备份 zip 上限
         private const val FORM_OVERHEAD = 1L * 1024 * 1024 // multipart 边界/字段余量
+        private const val MAX_CONCURRENT = 24 // P0 全局并发闸：防同网段海量连接把"每连接一线程"打到 ANR/线程 OOM
+        private const val MAX_CONCURRENT_PER_IP = 8 // P0 单 IP 并发上限，防单一恶意设备吃满全局名额
+        private const val MIN_FREE_BYTES = 256L * 1024 * 1024 // P1 写盘前可用空间下限，低于即拒收
+        private const val CUSTOM_QUOTA_BYTES = 1536L * 1024 * 1024 // P1 custom 壁纸+音乐总量配额（1.5GB）
+        private const val MAX_TEXT_LEN = 200 // P2 title/sub/filename 字符上限，防 MB 级字符串灌进 meta.json
         // 白名单唯一来源在 ImportGuard（导入 zip 与上传共用一套），此处只做别名，防止两处漂移
         private val WALL_EXTS = ImportGuard.WALL_EXTS
         private val TRACK_EXTS = ImportGuard.TRACK_EXTS

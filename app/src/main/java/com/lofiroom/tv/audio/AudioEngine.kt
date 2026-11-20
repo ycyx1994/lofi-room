@@ -38,6 +38,8 @@ class AudioEngine(context: Context, private val tap: VisualizerTap) {
     private val player: ExoPlayer
     var listener: Listener? = null
     private var consecutiveErrors = 0
+    // 暂停期间出错时攒下的跳曲请求：不立即切曲，等恢复播放再兑现（避免曲目静默改变）
+    private var pendingSkip = false
     private var currentUris: List<String> = CustomLibrary.tracks.map { it.mediaUri() }
 
     init {
@@ -58,6 +60,8 @@ class AudioEngine(context: Context, private val tap: VisualizerTap) {
             .build()
         player = ExoPlayer.Builder(context, renderersFactory)
             .setAudioAttributes(attrs, true)
+            // 插拔耳机/HDMI 音频路由切换时自动暂停，避免继续外放
+            .setHandleAudioBecomingNoisy(true)
             .build()
 
         // #23 曲目走合并库（内置 assets + 自定义文件），mediaUri() 统一分流
@@ -69,23 +73,47 @@ class AudioEngine(context: Context, private val tap: VisualizerTap) {
         player.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 val i = player.currentMediaItemIndex
+                // 事件回调处先快照曲目列表，post 执行时不再现读，避免与 refreshItems 并发时旧下标配新曲单
+                val ts = CustomLibrary.tracks
                 mainHandler.post {
-                    val ts = CustomLibrary.tracks
-                    ts.getOrNull(i)?.let { listener?.onTrackChanged(it, i, ts.size) }
+                    // post 执行时索引可能已变（并发切歌/重建列表），校验后再回调，失配则以最新索引重取
+                    if (player.currentMediaItemIndex == i) {
+                        ts.getOrNull(i)?.let { listener?.onTrackChanged(it, i, ts.size) }
+                    } else {
+                        val cur = player.currentMediaItemIndex
+                        val latest = CustomLibrary.tracks
+                        latest.getOrNull(cur)?.let { listener?.onTrackChanged(it, cur, latest.size) }
+                    }
                 }
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                if (isPlaying) consecutiveErrors = 0
+                if (isPlaying) {
+                    consecutiveErrors = 0
+                    // 兜底：暂停期出错攒下的跳曲请求在真正开播时兑现（togglePlay 已处理则为空操作）
+                    if (pendingSkip) {
+                        pendingSkip = false
+                        player.seekToNextMediaItem()
+                        player.prepare()
+                    }
+                }
                 tap.playing = isPlaying
                 mainHandler.post { listener?.onPlayingChanged(isPlaying) }
             }
 
             override fun onPlayerError(error: PlaybackException) {
                 // #10 坏曲目自动跳下一首；连续失败一轮说明全部损坏，停止重试避免忙循环
-                consecutiveErrors++
-                if (consecutiveErrors >= player.mediaItemCount) {
+                // 仅真实播放失败才累计：暂停态 prepare 失败不计，避免误触耗尽分支
+                if (player.playWhenReady) consecutiveErrors++
+                if (player.playWhenReady && consecutiveErrors >= player.mediaItemCount) {
                     player.playWhenReady = false
+                    // 耗尽后 ExoPlayer 处于 IDLE+error 态，补 prepare() 让引擎恢复可操作
+                    player.prepare()
+                    return
+                }
+                if (!player.playWhenReady) {
+                    // 用户主动暂停期间出错不强行换曲，恢复播放时再跳
+                    pendingSkip = true
                     return
                 }
                 player.seekToNextMediaItem()
@@ -104,21 +132,38 @@ class AudioEngine(context: Context, private val tap: VisualizerTap) {
     val currentIndex: Int get() = player.currentMediaItemIndex
 
     fun togglePlay() {
-        player.playWhenReady = !player.playWhenReady
+        val turningOn = !player.playWhenReady
+        if (turningOn && pendingSkip) {
+            // 暂停期出错攒下的跳曲请求，恢复播放时兑现
+            pendingSkip = false
+            player.seekToNextMediaItem()
+        }
+        // 防御：error/IDLE 态下翻标志无效，先 prepare 恢复可播
+        if (player.playerError != null || player.playbackState == Player.STATE_IDLE) player.prepare()
+        player.playWhenReady = turningOn
     }
 
     fun next() {
+        // 防御：error/IDLE 态下 seek 不会起播，先 prepare 恢复可播
+        if (player.playerError != null || player.playbackState == Player.STATE_IDLE) player.prepare()
         player.seekToNextMediaItem()
     }
 
     fun prev() {
+        // 防御：error/IDLE 态下 seek 不会起播，先 prepare 恢复可播
+        if (player.playerError != null || player.playbackState == Player.STATE_IDLE) player.prepare()
         if (player.currentPosition > 3000) player.seekTo(0)
         else player.seekToPreviousMediaItem()
     }
 
     fun playIndex(i: Int) {
+        // 防御：error/IDLE 态下 seek 不会起播，先 prepare 恢复可播
+        if (player.playerError != null || player.playbackState == Player.STATE_IDLE) player.prepare()
         player.seekTo(i, 0)
         player.playWhenReady = true
+        // 手动切歌是真实播放意图，清零错误累计与待跳曲请求
+        consecutiveErrors = 0
+        pendingSkip = false
     }
 
     /** #23 自定义曲目增删/重命名/移动后重建播放列表：
@@ -128,9 +173,11 @@ class AudioEngine(context: Context, private val tap: VisualizerTap) {
         val uris = ts.map { it.mediaUri() }
         if (uris == currentUris) return
         val keepUri = currentUris.getOrNull(player.currentMediaItemIndex)
-        var idx = uris.indexOf(keepUri)
-        if (idx < 0) idx = player.currentMediaItemIndex.coerceIn(0, (uris.size - 1).coerceAtLeast(0))
-        val pos = player.currentPosition
+        val keepIdx = uris.indexOf(keepUri)
+        // 仅当当前曲仍在新列表命中时保留进度，被删/换源时新曲从头播
+        val idx = if (keepIdx >= 0) keepIdx
+        else player.currentMediaItemIndex.coerceIn(0, (uris.size - 1).coerceAtLeast(0))
+        val pos = if (keepIdx >= 0) player.currentPosition else 0L
         val wasPlaying = player.playWhenReady
         currentUris = uris
         if (uris.isEmpty()) return
@@ -138,8 +185,11 @@ class AudioEngine(context: Context, private val tap: VisualizerTap) {
         player.prepare()
         player.playWhenReady = wasPlaying
         consecutiveErrors = 0
+        // 重建列表即用户已决定曲目，作废待跳曲请求
+        pendingSkip = false
         mainHandler.post {
-            CustomLibrary.tracks.getOrNull(idx)?.let {
+            // 用快照 ts 而非现读，避免 post 执行时列表又变导致错位（同 onMediaItemTransition 的修法）
+            ts.getOrNull(idx)?.let {
                 listener?.onTrackChanged(it, idx, ts.size)
             }
         }

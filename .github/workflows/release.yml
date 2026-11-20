@@ -14,6 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 供应链校验：比对 gradlew / gradle-wrapper.jar 官方已知指纹，防止构建入口被篡改
+      - uses: gradle/actions/wrapper-validation@v3
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -22,15 +25,17 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: 恢复签名密钥（仓库 Secrets 注入，任何机器出包签名一致）
+        # Secrets 一律走 env: 映射 + 环境变量引用，不以内联 ${{ }} 落进脚本正文（日志/报错不回显明文）
+        env:
+          LOFIROOM_KEYSTORE_BASE64: ${{ secrets.LOFIROOM_KEYSTORE_BASE64 }}
+          LOFIROOM_KEYSTORE_PASSWORD: ${{ secrets.LOFIROOM_KEYSTORE_PASSWORD }}
+          LOFIROOM_KEY_PASSWORD: ${{ secrets.LOFIROOM_KEY_PASSWORD }}
         run: |
           mkdir -p keystore
-          echo "${{ secrets.LOFIROOM_KEYSTORE_BASE64 }}" | base64 -d > keystore/lofiroom-release.jks
-          cat > keystore.properties <<EOF
-          storeFile=keystore/lofiroom-release.jks
-          storePassword=${{ secrets.LOFIROOM_KEYSTORE_PASSWORD }}
-          keyAlias=lofiroom
-          keyPassword=${{ secrets.LOFIROOM_KEY_PASSWORD }}
-          EOF
+          printf '%s' "$LOFIROOM_KEYSTORE_BASE64" | base64 -d > keystore/lofiroom-release.jks
+          # printf 字面写入口令（与原 ${{ }} 内联等价），避免 heredoc 对含 $/反引号 的口令二次展开
+          printf 'storeFile=keystore/lofiroom-release.jks\nstorePassword=%s\nkeyAlias=lofiroom\nkeyPassword=%s\n' \
+            "$LOFIROOM_KEYSTORE_PASSWORD" "$LOFIROOM_KEY_PASSWORD" > keystore.properties
 
       - name: 单元测试（UpdateChecker / UpdateScheduler / ImportGuard 纯逻辑）
         run: ./gradlew :app:testReleaseUnitTest --stacktrace
@@ -41,8 +46,20 @@ jobs:
       - name: 构建 release 包
         run: ./gradlew :app:assembleRelease
 
-      - name: 打印签名指纹（应为 9F:99:D5:23:…:BC:72:69）
-        run: keytool -printcert -jarfile app/build/outputs/apk/release/app-release.apk | grep -E "SHA256|Owner|所有者"
+      - name: 校验签名指纹（应为 9F:99:D5:23:66:55:00:FF:D4:86:49:D2:34:8D:86:4D:B2:B1:56:22:B5:1B:9F:D8:73:91:29:47:29:BC:72:69，不匹配即 fail-fast）
+        run: |
+          EXPECTED="9F:99:D5:23:66:55:00:FF:D4:86:49:D2:34:8D:86:4D:B2:B1:56:22:B5:1B:9F:D8:73:91:29:47:29:BC:72:69"
+          ACTUAL="$(keytool -printcert -jarfile app/build/outputs/apk/release/app-release.apk | sed -nE 's/.*SHA256:[[:space:]]*//p' | head -n1 | tr -d '[:space:]' | tr 'a-f' 'A-F')"
+          echo "APK 签名指纹: $ACTUAL"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::签名指纹不匹配（期望 $EXPECTED，实际 $ACTUAL）——签名密钥/流程被改，中断发布"
+            exit 1
+          fi
+
+      # 签名材料用完即焚（keystore.properties/keystore 仅构建期需要，后续上传/发布步骤不依赖）
+      - name: 清理签名材料（keystore/keystore.properties）
+        if: always()
+        run: rm -rf keystore keystore.properties
 
       - uses: actions/upload-artifact@v4
         with:

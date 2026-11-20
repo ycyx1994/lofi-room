@@ -446,10 +446,20 @@ function toggleRail() {
 try { if (localStorage.getItem('lofi-rail') === '1') document.body.classList.add('rail'); } catch (e) {}
 
 async function api(path, opts) {
-  const r = await fetch(path, opts);
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
-  return j;
+  // 15s 超时：电视端无响应时快速失败（AbortController 在老 WebView 缺失时退化为旧行为）
+  const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), 15000) : null;
+  try {
+    const r = await fetch(path, ctl ? { ...(opts || {}), signal: ctl.signal } : opts);
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    return j;
+  } catch (e) {
+    if (ctl && e && e.name === 'AbortError') throw new Error('网络超时');
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function xhrUpload(url, file, fields, onDone, label) {
@@ -459,6 +469,7 @@ function xhrUpload(url, file, fields, onDone, label) {
   for (const k in fields) q.set(k, fields[k]);
   const x = new XMLHttpRequest();
   x.open('POST', url + '?' + q.toString());
+  x.timeout = 120000; // 上传 120s 超时
   x.upload.onprogress = e => {
     if (e.lengthComputable) $('#progress-fill').style.width = (e.loaded / e.total * 100).toFixed(1) + '%';
   };
@@ -470,7 +481,11 @@ function xhrUpload(url, file, fields, onDone, label) {
       onDone(j);
     } catch (e) { toast(e.message, true); }
   };
-  x.onerror = () => { $('#progress').style.display = 'none'; toast('网络错误，上传失败', true); };
+  // 超时/网络错误/中止统一收起进度条并提示，避免失败后进度条悬挂
+  const fail = () => { $('#progress').style.display = 'none'; toast('网络超时', true); };
+  x.ontimeout = fail;
+  x.onerror = fail;
+  x.onabort = fail;
   const fd = new FormData();
   fd.append('file', file, file.name); // 只带二进制，文本字段在 query（见上）
   $('#progress-text').textContent = (label || '上传 ') + file.name;
@@ -482,7 +497,7 @@ function xhrUpload(url, file, fields, onDone, label) {
 function renderNow() {
   $('#now').innerHTML =
     (state.playing ? '正在播放 <b>' + esc(state.trackTitle) + '</b>' : '已暂停 · <b>' + esc(state.trackTitle) + '</b>') +
-    '<br>当前背景 #' + (state.wallpaperIndex + 1) + ' · 共 ' + tracks.length + ' 首曲目';
+    '<br>当前背景 #' + (+state.wallpaperIndex + 1) + ' · 共 ' + tracks.length + ' 首曲目';
 }
 
 function esc(s) {
@@ -492,10 +507,10 @@ function esc(s) {
 function renderWalls() {
   const g = $('#wall-grid');
   g.innerHTML = wallpapers.map(w => `
-    <div class="cell ${w.id === state.wallpaperIndex ? 'applied' : ''}" onclick="applyWall(${w.id})" data-id="${w.id}" ${!w.builtin ? 'data-custom="1"' : ''}>
-      <img src="api/thumbs/wall/${w.id}?v=${encodeURIComponent(w.key || w.id)}" loading="lazy">
+    <div class="cell ${w.id === state.wallpaperIndex ? 'applied' : ''}" onclick="applyWall(${+w.id})" data-id="${+w.id}" ${!w.builtin ? 'data-custom="1"' : ''}>
+      <img src="api/thumbs/wall/${+w.id}?v=${encodeURIComponent(w.key || +w.id)}" loading="lazy">
       ${w.id === state.wallpaperIndex ? '<div class="tag">当前</div>' : ''}
-      ${!w.builtin ? `<div class="del" onclick="event.stopPropagation();openDelWall(${w.id})"><svg class="ic"><use href="#i-x"/></svg></div>` : ''}
+      ${!w.builtin ? `<div class="del" onclick="event.stopPropagation();openDelWall(${+w.id})"><svg class="ic"><use href="#i-x"/></svg></div>` : ''}
     </div>`).join('');
   $('#wall-empty').style.display = wallpapers.length ? 'none' : 'block';
 }
@@ -505,30 +520,37 @@ function renderTracks() {
   l.innerHTML = tracks.map((t, i) => `
     <div class="track ${i === state.trackIndex ? 'playing' : ''}">
       <div class="no">${String(i + 1).padStart(2, '0')}</div>
-      <div class="meta" onclick="playTrack(${t.id})">
+      <div class="meta" onclick="playTrack(${+t.id})">
         <div class="t">${esc(t.title)}</div>
         <div class="s">${esc(t.sub)}${i === state.trackIndex ? ' · PLAYING' : ''}</div>
       </div>
       <div class="ops">
         ${!t.builtin ? `
-          <button onclick="moveTrack(${t.id},-1)"><svg class="ic"><use href="#i-arrow-up"/></svg></button>
-          <button onclick="moveTrack(${t.id},1)"><svg class="ic"><use href="#i-arrow-down"/></svg></button>
-          <button onclick="openEdit(${t.id})"><svg class="ic"><use href="#i-pencil"/></svg>编辑</button>
-          <button onclick="delTrack(${t.id})"><svg class="ic"><use href="#i-trash"/></svg>删</button>` : `<button onclick="playTrack(${t.id})"><svg class="ic"><use href="#i-play"/></svg>播放</button>`}
+          <button onclick="moveTrack(${+t.id},-1)"><svg class="ic"><use href="#i-arrow-up"/></svg></button>
+          <button onclick="moveTrack(${+t.id},1)"><svg class="ic"><use href="#i-arrow-down"/></svg></button>
+          <button onclick="openEdit(${+t.id})"><svg class="ic"><use href="#i-pencil"/></svg>编辑</button>
+          <button onclick="delTrack(${+t.id})"><svg class="ic"><use href="#i-trash"/></svg>删</button>` : `<button onclick="playTrack(${+t.id})"><svg class="ic"><use href="#i-play"/></svg>播放</button>`}
       </div>
     </div>`).join('');
   $('#track-empty').style.display = tracks.length ? 'none' : 'block';
 }
 
+// 并发守卫：refreshing=refresh() 在途计数（轮询避开）、polling=轮询在途、lastStateJson=state 去重指纹
+let refreshing = 0, polling = false, lastStateJson = '';
+
 async function refresh() {
+  refreshing++;
   try {
     const [s, w, t] = await Promise.all([
       api('api/state'), api('api/wallpapers'), api('api/tracks'),
     ]);
     state = s; wallpapers = w.wallpapers; tracks = t.tracks;
+    lastStateJson = JSON.stringify(s);
     renderNow(); renderWalls(); renderTracks();
   } catch (e) {
     $('#now').textContent = '连接失败：' + e.message;
+  } finally {
+    refreshing--;
   }
 }
 
@@ -674,7 +696,9 @@ $('#imp-start').addEventListener('click', () => {
 $('#imp-file').addEventListener('change', e => {
   const f = e.target.files[0];
   e.target.value = '';
-  if (f) openImport(f);
+  if (!f) return;
+  if (f.size > 512 * 1024 * 1024) { toast('备份包超过 512MB 限制，已取消导入', true); return; } // 与服务端限额一致，先拦后传
+  openImport(f);
 });
 
 // ── 背景 16:9 裁剪编辑 ──────────────────────────────────
@@ -839,12 +863,15 @@ window.addEventListener('resize', () => {
 $('#wall-file').addEventListener('change', e => {
   const f = e.target.files[0];
   e.target.value = '';
-  if (f) openCrop(f); // 选图后先进裁剪编辑，确认后才上传
+  if (!f) return;
+  if (f.size > 20 * 1024 * 1024) { toast('图片超过 20MB 限制，已取消上传', true); return; } // 与服务端限额一致，先拦后传
+  openCrop(f); // 选图后先进裁剪编辑，确认后才上传
 });
 
 $('#track-file').addEventListener('change', e => {
   const f = e.target.files[0];
-  if (f) xhrUpload('api/tracks', f, {
+  if (f && f.size > 100 * 1024 * 1024) toast('音频超过 100MB 限制，已取消上传', true); // 与服务端限额一致，先拦后传
+  else if (f) xhrUpload('api/tracks', f, {
     title: f.name.replace(/\.[^.]+$/, ''),
     sub: 'MY MUSIC · 自定义',
   }, () => { toast('音频已上传'); refresh(); });
@@ -852,9 +879,18 @@ $('#track-file').addEventListener('change', e => {
 });
 
 refresh();
-setInterval(() => api('api/state').then(s => {
-  state = s; renderNow(); renderTracks();
-}).catch(() => {}), 5000);
+// 轮询：页面隐藏跳过请求；上一次刷新/轮询未完成跳过本轮；state 与上次一致跳过重绘（避免整表重建吞手势）
+setInterval(async () => {
+  if (document.hidden || refreshing || polling) return;
+  polling = true;
+  try {
+    const s = await api('api/state');
+    const sig = JSON.stringify(s);
+    if (sig === lastStateJson) return; // 与上次相同：跳过重绘
+    lastStateJson = sig;
+    state = s; renderNow(); renderTracks();
+  } catch (e) {} finally { polling = false; }
+}, 5000);
 </script>
 </body>
 </html>

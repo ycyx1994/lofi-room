@@ -580,6 +580,8 @@ private fun DeleteWallDialog(
                 .clip(RoundedCornerShape(20.dp))
                 .background(PanelFill, RoundedCornerShape(20.dp))
                 .border(1.dp, PanelStroke, RoundedCornerShape(20.dp))
+                // P1：消费卡片本体的点按（同主面板 :128），避免穿透到遮罩误关确认框
+                .pointerInput(Unit) { detectTapGestures { } }
                 .padding(22.dp)
         ) {
             Text(stringResource(R.string.panel_delete_title), color = Cream, fontFamily = serif, fontSize = 17.sp)

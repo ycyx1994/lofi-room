@@ -77,7 +77,9 @@ case "$UPLOAD_METHOD" in
     # Cloudflare R2 公共桶（与 UpdateChecker.MIRROR_BASE 对齐）：
     # 桶名 lofiroom，对象键 lofiroom/{version.txt,notes.txt,lofiroom-latest.apk}
     BUCKET="${R2_BUCKET:-lofiroom}"
-    for f in version.txt notes.txt lofiroom-latest.apk; do
+    # 与 :11 不变量对齐：APK/notes 先行，version.txt 收尾（rsync/scp 分支同语义），
+    # 避免 version.txt 先行指向未就绪的新包。
+    for f in notes.txt lofiroom-latest.apk version.txt; do
       npx wrangler r2 object put "$BUCKET/${MIRROR_DIR_NOSLASH:+$MIRROR_DIR_NOSLASH/}$f" \
         --file "$WORK/$f" --remote
     done
