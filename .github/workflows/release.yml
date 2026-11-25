@@ -17,6 +17,26 @@ jobs:
       # 供应链校验：比对 gradlew / gradle-wrapper.jar 官方已知指纹，防止构建入口被篡改
       - uses: gradle/actions/wrapper-validation@v3
 
+      # tag ↔ versionName 一致性：推 v1.9.3 标签时，构建出的 APK 必须是 versionName 1.9.3。
+      # 否则会像 v1.9.2 那样「tag 与版本号不符」→ 站点/更新判定与哈希闸错乱 → 无限更新循环。
+      # 仅 tag 构建校验（workflow_dispatch 手动出包无 tag，跳过）。脚本内用 shell 变量取 $GITHUB_REF_NAME，不写内联表达式。
+      - name: 校验 tag 与 versionName 一致（tag 构建时）
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          VN="$(sed -nE 's/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' app/build.gradle.kts | head -n1)"
+          VC="$(sed -nE 's/^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p' app/build.gradle.kts | head -n1)"
+          TAG="$GITHUB_REF_NAME"
+          echo "tag=$TAG  versionName=$VN  versionCode=$VC"
+          if [ -z "$VN" ] || [ -z "$VC" ]; then
+            echo "::error::从 app/build.gradle.kts 解析 versionName/versionCode 失败（versionName 或 versionCode 缺失）"
+            exit 1
+          fi
+          if [ "$TAG" != "v$VN" ]; then
+            echo "::error::tag 与 versionName 不一致：tag=$TAG 但 versionName=$VN（应为 v$VN）——中断出包，防版本错乱/无限更新循环"
+            exit 1
+          fi
+          echo "✓ tag $TAG 与 versionName $VN 一致（versionCode $VC）"
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

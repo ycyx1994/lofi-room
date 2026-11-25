@@ -77,13 +77,19 @@ else
   : > "$WORK/notes.txt"
 fi
 
-# 2. APK：优先本地 release 产物，其次 GitHub Release 固定名直链
-if [[ -f app/build/outputs/apk/release/app-release.apk ]]; then
+# 2. APK：优先 GitHub Release 固定名直链（= CI 出包，保证 R2 与 GitHub 两渠道同一份、哈希一致），
+#    其次本地 release 产物（仅当 Release 尚未就绪时兜底）。本地包≠CI 包会让 R2 与 GitHub 两渠道
+#    .sha256 不一致 → UpdateChecker 跨渠道哈希误杀（R2 挂了走 GitHub 兜底时被哈希闸拒装）。
+need_cmd curl
+if curl -fL -o "$WORK/lofiroom-latest.apk" \
+     "https://github.com/ycyx1994/lofi-room/releases/latest/download/lofiroom-latest.apk"; then
+  echo "APK 取自 GitHub Release（CI 出包，与 GitHub 渠道同源，哈希一致）"
+elif [[ -f app/build/outputs/apk/release/app-release.apk ]]; then
+  echo "⚠ Release 直链不可用，回退本地 app-release.apk（本地包≠CI 包，R2 与 GitHub 两渠道哈希可能不一致→跨渠道更新可能被误杀）" >&2
   cp app/build/outputs/apk/release/app-release.apk "$WORK/lofiroom-latest.apk"
 else
-  need_cmd curl
-  curl -fL -o "$WORK/lofiroom-latest.apk" \
-    "https://github.com/ycyx1994/lofi-room/releases/latest/download/lofiroom-latest.apk"
+  echo "缺少 APK：Release 直链不可用且无本地 app/build/outputs/apk/release/app-release.apk" >&2
+  exit 1
 fi
 
 # 3. 哈希旁文件 + version.txt 哈希行（与 UpdateChecker.parseSha256 / SHA256_LINE_RE 对齐：
