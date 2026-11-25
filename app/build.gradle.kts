@@ -121,3 +121,18 @@ dependencies {
     // 更新机制纯逻辑单测（UpdateChecker 版本解析/比较 + UpdateScheduler 节流退避）
     testImplementation("junit:junit:4.13.2")
 }
+
+// ── 构建卫生：自动清理 iCloud 同步在 build/ 里生成的重复副本 ──────────────────
+// 项目若位于 iCloud 同步盘（如 ~/Documents/code），iCloud 会给 AGP 产物做 "NAME N.ext" /
+// "NAME copy.ext" 数字后缀副本；文件名含空格会让 AGP 资源解析（parse*LocalResources）判为非法
+// 文件名而构建失败。任务输入快照先于 doFirst，事后删除会留悬引用报 "not a file nor directory"，
+// 故在**配置期**（任务输入快照前）删掉 build/ 下这类副本（只碰 build/ 不动源码）。
+run {
+    val dir = layout.buildDirectory.get().asFile
+    if (dir.exists()) {
+        val dupe = Regex(".* [0-9]+\\..+")
+        fileTree(dir).forEach { f ->
+            if (dupe.matches(f.name) || f.name.contains(" copy.")) f.delete()
+        }
+    }
+}

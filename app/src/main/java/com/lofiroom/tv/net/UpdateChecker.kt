@@ -48,6 +48,7 @@ object UpdateChecker {
     private const val CONNECT_TIMEOUT_MS = 8_000
     private const val READ_TIMEOUT_MS = 10_000
     private const val DOWNLOAD_READ_TIMEOUT_MS = 30_000
+    private const val MAX_REDIRECTS = 3 // 下载重定向跳数上限（防循环重定向）
 
     // ── 资源上限（防异常源写满存储/撑爆内存） ──
     private const val APK_MAX_BYTES = 300L * 1024 * 1024  // APK 下载硬上限 300MB
@@ -65,9 +66,21 @@ object UpdateChecker {
     /** 64 位十六进制 SHA-256 行：裸哈希 / "sha256=<hex>" / sha256sum 的 "<hex>  文件名" 都收 */
     private val SHA256_LINE_RE = Regex("(?i)^(?:sha256[:=]\\s*)?([0-9a-f]{64})(?:\\s+\\S+)?$")
 
-    /** 下载 URL 白名单：只放行 https + 已知分发域（GitHub 资产/固定名直链/Cloudflare R2 公共桶）。
-     *  API 返回的 browser_download_url 是外部输入，不校验直入候选 = 被劫持 API 可把包指到任意主机。 */
-    private val APK_URL_HOST_RE = Regex("^(?:[a-z0-9-]+\\.)*(?:github\\.com|githubusercontent\\.com|r2\\.dev)$")
+    /** 本项目 R2 镜像桶 host（与 [MIRROR_BASE] 同源）：R2 公共桶域 `*.r2.dev` 任意外人可建桶，
+     *  故只信任本项目镜像那一个 host，不通配整个 r2.dev。 */
+    private val MIRROR_HOST: String = try {
+        URL(MIRROR_BASE).host?.lowercase() ?: ""
+    } catch (_: Exception) {
+        ""
+    }
+
+    /** 下载 URL 白名单：只放行 https + 已知分发域。github.com / githubusercontent.com 是 GitHub 控制的域
+     *  （外人拿不到子域，保留通配即可），R2 只放行本项目镜像桶 host。API 返回的 browser_download_url 是外部输入，
+     *  不校验直入候选 = 被劫持 API 可把包指到任意主机。 */
+    private val APK_URL_HOST_RE: Regex = run {
+        val gh = "^(?:[a-z0-9-]+\\.)*(?:github\\.com|githubusercontent\\.com)$"
+        if (MIRROR_HOST.isEmpty()) Regex(gh) else Regex("$gh|^${Regex.escape(MIRROR_HOST)}$")
+    }
 
     /** URL 是否可信下载源：https 且 host 过白名单（端口只许默认 443） */
     fun isTrustedApkUrl(url: String): Boolean = try {
@@ -113,7 +126,7 @@ object UpdateChecker {
         val version = parseVersion(versionRaw) ?: return null // 非法响应按失败处理 → 降级 GitHub
         val notes = httpText("$MIRROR_BASE/notes.txt") ?: ""
         // 期望哈希：lofiroom-latest.apk.sha256 旁文件优先，其次 version.txt 哈希行；都缺 = null（不强制，见 [download]）
-        val sha256 = httpText("$MIRROR_BASE/lofiroom-latest.apk.sha256")?.let { parseSha256(it) } ?: hashInTxt
+        val sha256 = fetchSha256Text("$MIRROR_BASE/lofiroom-latest.apk.sha256")?.let { parseSha256(it) } ?: hashInTxt
         return ReleaseInfo(
             versionName = version,
             tagName = "v$version",
@@ -122,6 +135,15 @@ object UpdateChecker {
             apkSize = 0L,
             sha256 = sha256,
         )
+    }
+
+    /** 拉取 SHA-256 旁文件文本，网络失败重试以窄化"压制响应"窗口；仍失败返回 null（交调用方按缺哈希处理） */
+    private fun fetchSha256Text(url: String): String? {
+        repeat(2) {
+            val t = httpText(url)
+            if (t != null) return t
+        }
+        return null
     }
 
     /** 从文本里解析期望 SHA-256（第一行命中即取，小写十六进制）；无命中返回 null */
@@ -173,7 +195,7 @@ object UpdateChecker {
                     apkSize = a.optLong("size")
                 } else if (name.endsWith(".sha256") && sha256 == null) {
                     // 发布端哈希旁文件（release.yml 产出）：GitHub 通道同样喂哈希闸
-                    sha256 = httpText(url)?.let { parseSha256(it) }
+                    sha256 = fetchSha256Text(url)?.let { parseSha256(it) }
                 }
             }
             if (apkUrl.isEmpty()) return null
@@ -263,9 +285,14 @@ object UpdateChecker {
         // 大小上限双闸：min(声明大小, 300MB 硬上限)；声明缺失时用硬上限
         val declared = if (declaredSize > 0L) declaredSize else lastRelease?.apkSize ?: 0L
         val maxBytes = if (declared > 0L) minOf(declared, APK_MAX_BYTES) else APK_MAX_BYTES
-        // 哈希闸：镜像旁文件/version.txt 哈希行、GitHub .sha256 资产（release.yml 产出）任一提供即强制；
-        // 都缺（历史版本发布端无哈希）时 wantSha = null 跳过校验，不给旧部署加硬依赖
+        // 哈希闸（fail-closed）：镜像旁文件/version.txt 哈希行、GitHub .sha256 资产（release.yml 产出）任一提供即强制。
+        // 更新总是装更新版，新版发布端都发 .sha256 → 期望哈希应必在；缺（"未发布" vs "拉取被压制"难区分）即异常，
+        // 按压制处理：拒绝安装未校验包（fail-closed），不再静默放行。旧版无哈希不再是更新目标，不受影响。
         val wantSha = (expectedSha256 ?: lastRelease?.sha256)?.lowercase()
+        if (wantSha == null) {
+            Log.w(TAG, "download: 无期望 SHA-256（旁文件/version.txt 哈希行均缺或拉取被压制），fail-closed 拒绝安装未校验包 tag=$tag")
+            return false
+        }
         for (url in urls) {
             var tries = 0
             while (tries < RESUME_TRIES) {
@@ -280,8 +307,8 @@ object UpdateChecker {
                             part.delete()
                             return false
                         }
-                        // 哈希闸（期望哈希存在才强制）：对不上按篡改/损坏处理，删 .part 终止
-                        if (wantSha != null && sha256Of(part)?.equals(wantSha, true) != true) {
+                        // 哈希闸（fail-closed 已保证 wantSha 非空）：对不上按篡改/损坏处理，删 .part 终止
+                        if (sha256Of(part)?.equals(wantSha, true) != true) {
                             part.delete()
                             return false
                         }
@@ -344,22 +371,41 @@ object UpdateChecker {
         try {
             // 续传残留本身已超上限：按超限中断（.part 由 download 的 OVER_LIMIT 分支删除）
             if (part.length() > maxBytes) return Outcome.OVER_LIMIT
-            conn = URL(url).openConnection() as HttpURLConnection
-            conn.connectTimeout = CONNECT_TIMEOUT_MS
-            conn.readTimeout = DOWNLOAD_READ_TIMEOUT_MS
             val have = part.length()
-            if (have > 0) conn.setRequestProperty("Range", "bytes=$have-")
-            when (conn.responseCode) {
-                200 -> if (have > 0) part.delete() // 服务端不支持 Range，重下
-                206 -> Unit                          // 断点续传
-                else -> return Outcome.FAILED
+            // 逐跳校验 host 的内联重定向跟随：instanceFollowRedirects=false，每跳验 Location 目标过
+            // isTrustedApkUrl 白名单，防被劫持源把包 302 指任意主机；Range 逐跳保留（续传语义不变）。
+            var cur = url
+            var hops = 0
+            while (true) {
+                if (!isTrustedApkUrl(cur)) return Outcome.FAILED
+                conn = URL(cur).openConnection() as HttpURLConnection
+                conn.instanceFollowRedirects = false
+                conn.connectTimeout = CONNECT_TIMEOUT_MS
+                conn.readTimeout = DOWNLOAD_READ_TIMEOUT_MS
+                if (have > 0) conn.setRequestProperty("Range", "bytes=$have-")
+                val code = conn.responseCode
+                if (code in 301..308) {
+                    val loc = conn.getHeaderField("Location") ?: return Outcome.FAILED
+                    conn.disconnect()
+                    conn = null
+                    cur = URL(URL(cur), loc).toString() // 解析相对 Location
+                    if (++hops > MAX_REDIRECTS) return Outcome.FAILED
+                    continue
+                }
+                when (code) {
+                    200 -> if (have > 0) part.delete() // 服务端不支持 Range，重下
+                    206 -> Unit                          // 断点续传
+                    else -> return Outcome.FAILED
+                }
+                break
             }
-            val base = if (conn.responseCode == 206) have else 0L
-            val total = resolveTotal(conn, base)
+            val active = conn ?: return Outcome.FAILED // 循环 break 时 conn 必为最终连接
+            val base = if (active.responseCode == 206) have else 0L
+            val total = resolveTotal(active, base)
             if (total > maxBytes) return Outcome.OVER_LIMIT // 声明总大小已超闸，直接中断
             if (total <= 0) onProgress(-1) // 大小未知：UI 转"下载中…"
 
-            conn.inputStream.use { input ->
+            active.inputStream.use { input ->
                 java.io.FileOutputStream(part, base > 0).use { out ->
                     val buf = ByteArray(64 * 1024)
                     var done = base

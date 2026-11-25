@@ -216,6 +216,32 @@ class ImportGuardTest {
         assertEquals("", ImportGuard.sanitizeDisplay("   "))
     }
 
+    @Test
+    fun sanitizeDisplay_truncates_without_splitting_surrogate_pair() {
+        val emoji = "\uD83D\uDE00" // 😀 = 一个代理对（2 个 UTF-16 单元）
+        // 199 个 'a' + emoji + 若干 'b'：第 200 个 UTF-16 单元正好是 emoji 的高位代理
+        val out = ImportGuard.sanitizeDisplay("a".repeat(199) + emoji + "b".repeat(10))
+        // 码点安全截断应整体丢弃被切的 emoji，绝不留下孤立代理单元 / U+FFFD 乱码
+        assertEquals("a".repeat(199), out)
+        assertFalse(out.any { Character.isSurrogate(it) })
+    }
+
+    @Test
+    fun sanitizeDisplay_strips_filler_and_format_invisible_chars() {
+        val tag = String(Character.toChars(0xE0020)) // Tag 块（代理对），隐形命名填充
+        val s = "a" + "\u3164" + "\u2060" + "\uFE0F" + "\u061C" + "\u180E" + tag + "b"
+        // Hangul filler / 词连接符 / VS16 / ALM / MVS / Tag 块 全部剥掉
+        assertEquals("ab", ImportGuard.sanitizeDisplay(s))
+    }
+
+    @Test
+    fun sanitizeDisplay_normalizes_space_separators_to_plain_space() {
+        // NBSP / figure space / narrow NBSP → 普通空格（防宽度伪造，但保留词分隔）
+        assertEquals("a b", ImportGuard.sanitizeDisplay("a\u00A0b"))
+        assertEquals("a b", ImportGuard.sanitizeDisplay("a\u2007b"))
+        assertEquals("a b", ImportGuard.sanitizeDisplay("a\u202Fb"))
+    }
+
     // ── planExtract：importZip 抽取决策集成（P3-6）────────
 
     @Test

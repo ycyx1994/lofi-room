@@ -21,11 +21,17 @@ internal object ImportGuard {
     /** 落盘名允许保留的字符：字母数字 + . _ - 与 CJK 基本区，其余一律转下划线 */
     private val UNSAFE = Regex("[^A-Za-z0-9._\\-\u4e00-\u9fa5]")
 
-    /** 展示名要剥的控制字符：ASCII 控制符 + C1 + 行/段分隔符 U+2028/2029（→空格，防截断注入与多行夹带） */
-    private val CONTROL = Regex("[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]")
+    /**
+     * 展示名要归一为普通空格的字符：ASCII 控制符 + C1 + 行/段分隔符 U+2028/2029 + 空格类分隔符
+     * U+00A0(NBSP)/U+2007(figure space)/U+202F(narrow NBSP)（→空格，防截断注入/多行夹带/宽度伪造）。
+     */
+    private val CONTROL = Regex("[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029\\u00a0\\u2007\\u202f]")
 
-    /** 展示名要剥的隐形字符：零宽 + BOM + bidi 控制（直接删除，防显示欺骗） */
-    private val INVISIBLE = Regex("[\\u200b-\\u200f\\u202a-\\u202e\\u2066-\\u2069\\ufeff]")
+    /**
+     * 展示名要直接删除的隐形字符：零宽 + BOM + bidi/格式控制 + 填充符 U+3164(Hangul filler)
+     * + 变体选择符 U+FE00-FE0F(VS1-16) + Tag 块 U+E0001-E007F（防显示欺骗与隐形命名填充）。
+     */
+    private val INVISIBLE = Regex("[\\u200b-\\u200f\\u202a-\\u202e\\u2060\\u2066-\\u2069\\u061c\\u180e\\u3164\\uFE00-\\uFE0F\\ufeff\\x{E0001}-\\x{E007F}]")
 
     /** 落盘名 stem 长度上限（字符数）：uniqueName 前缀 ~20B + CJK 3B/char × 64 ≈ 212B < 255B 文件名上限 */
     private const val MAX_NAME_LEN = 64
@@ -94,11 +100,22 @@ internal object ImportGuard {
     }
 
     /**
-     * 展示名消毒（P3-8）：隐形字符直接删、控制字符换空格、去首尾空白、限长 200。
+     * 按码点安全截断至多 [n] 个 UTF-16 单元：若截断点正好落在代理对中间（前一单元是高位代理），
+     * 回退一格把高位代理一并丢掉——避免留下孤立高位代理渲染成 U+FFFD 乱码。
+     */
+    private fun String.takeSafe(n: Int): String {
+        if (length <= n) return this
+        var end = n
+        if (end > 0 && Character.isHighSurrogate(this[end - 1])) end--
+        return substring(0, end)
+    }
+
+    /**
+     * 展示名消毒（P3-8）：隐形字符直接删、控制字符换空格、去首尾空白、限长 200（码点安全，不切开代理对）。
      * 允许返回空串——调用方保留原有 ifBlank 回退（文件名派生展示名）。
      */
     fun sanitizeDisplay(value: String): String =
-        value.replace(INVISIBLE, "").replace(CONTROL, " ").trim().take(MAX_DISPLAY_LEN)
+        value.replace(INVISIBLE, "").replace(CONTROL, " ").trim().takeSafe(MAX_DISPLAY_LEN)
 
     /**
      * zip 条目抽取决策（importZip 的纯逻辑，P3-6 集成测试缝）：
