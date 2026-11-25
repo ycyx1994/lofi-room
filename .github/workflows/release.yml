@@ -25,7 +25,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: 恢复签名密钥（仓库 Secrets 注入，任何机器出包签名一致）
-        # Secrets 一律走 env: 映射 + 环境变量引用，不以内联 ${{ }} 落进脚本正文（日志/报错不回显明文）
+        # Secrets 一律走 env: 映射 + 环境变量引用，不以内联表达式落进脚本正文（日志/报错不回显明文）
         env:
           LOFIROOM_KEYSTORE_BASE64: ${{ secrets.LOFIROOM_KEYSTORE_BASE64 }}
           LOFIROOM_KEYSTORE_PASSWORD: ${{ secrets.LOFIROOM_KEYSTORE_PASSWORD }}
@@ -33,7 +33,7 @@ jobs:
         run: |
           mkdir -p keystore
           printf '%s' "$LOFIROOM_KEYSTORE_BASE64" | base64 -d > keystore/lofiroom-release.jks
-          # printf 字面写入口令（与原 ${{ }} 内联等价），避免 heredoc 对含 $/反引号 的口令二次展开
+          # printf 字面写入口令（与原内联表达式等价），避免 heredoc 对含 $/反引号 的口令二次展开
           printf 'storeFile=keystore/lofiroom-release.jks\nstorePassword=%s\nkeyAlias=lofiroom\nkeyPassword=%s\n' \
             "$LOFIROOM_KEYSTORE_PASSWORD" "$LOFIROOM_KEY_PASSWORD" > keystore.properties
 
