@@ -2,11 +2,21 @@
 <!-- debug 源集专属清单：只被 debug 变体合并，release 包不含这些声明。
      AGP 8 用 namespace（app/build.gradle.kts）提供包名，此处不再写 package 属性。 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 发布演练专用权限：signature 级 —— 仅同签名应用（本应用自身）持有，
+         外部应用即便知道 action 也发不进安装链（REVIEW-2026-11-20 P3-3） -->
+    <permission
+        android:name="com.lofiroom.tv.permission.UPDATE_TEST"
+        android:protectionLevel="signature" />
+    <uses-permission android:name="com.lofiroom.tv.permission.UPDATE_TEST" />
+
     <application>
-        <!-- 发布演练钩子：adb 广播走"三道闸 → 安装"链路（不经网络下载） -->
+        <!-- 发布演练钩子：adb 广播走"三道闸 → 安装"链路（不经网络下载）。
+             receiver 要求 signature 权限，adb 须以应用身份发送（run-as / root）；
+             完整命令行见 net/UpdateTestReceiver.kt 头注释（XML 注释里不能写连续短横，命令放 .kt 文档） -->
         <receiver
             android:name=".net.UpdateTestReceiver"
-            android:exported="true">
+            android:exported="true"
+            android:permission="com.lofiroom.tv.permission.UPDATE_TEST">
             <intent-filter>
                 <action android:name="com.lofiroom.tv.UPDATE_TEST" />
             </intent-filter>

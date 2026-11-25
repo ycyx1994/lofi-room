@@ -62,11 +62,17 @@ class WallpaperView @JvmOverloads constructor(
             if (!running) return
             val elapsed = if (switchAtMs > 0) System.currentTimeMillis() - switchAtMs else 0L
             if (switchAtMs > 0 && autoRotate && elapsed > holdMs) advance() // #14 开关打开才自动换
-            // #2 淡入淡出期全帧率；推镜/静止段隔帧 30fps，降低低端盒子 GPU 填充压力
+            // #2 淡入淡出期全帧率；推镜段隔帧 30fps，降低低端盒子 GPU 填充压力
+            // P3-17 静止段（推镜 60s 走完后到自动切换前）画面不变，不再每帧空转重绘
             frameCount++
             val inFade = switchAtMs > 0 && elapsed < fadeMs
-            if (inFade || frameCount % 2 == 0L) invalidate()
-            postFrame()
+            val pushing = switchAtMs > 0 && elapsed < kenBurnsMs
+            when {
+                inFade || previous != null -> invalidate()
+                pushing && frameCount % 2 == 0L -> invalidate()
+            }
+            // P2-1 只有真在画（溶解/推镜）才全帧率跟手；静止段改延后唤醒，别让 Choreographer 60 次/秒空转
+            if (inFade || previous != null || pushing) postFrame() else postIdleFrame(elapsed)
         }
     }
 
@@ -75,6 +81,30 @@ class WallpaperView @JvmOverloads constructor(
         if (framePending) return
         framePending = true
         Choreographer.getInstance().postFrameCallback(frameCallback)
+    }
+
+    /**
+     * P2-1 静止段（溶解/推镜都走完）画面不变：不再 60fps 空转唤醒，改延后到下个有意义事件再醒。
+     * autoRotate 待触发则睡到到点附近（醒来 doFrame 顶部会 advance()）；无定时事件只留兜底心跳。
+     * stop() 的 removeFrameCallback 对延后回调同样生效，不会漏停。
+     */
+    private fun postIdleFrame(elapsed: Long) {
+        if (framePending) return
+        val delayMs = when {
+            switchAtMs > 0 && autoRotate && elapsed < holdMs ->
+                (holdMs - elapsed).coerceIn(IDLE_MIN_MS, IDLE_MAX_MS) // 睡到 autoRotate 到点附近
+            else -> IDLE_MAX_MS                                      // 无定时事件：只留兜底心跳
+        }
+        framePending = true
+        Choreographer.getInstance().postFrameCallbackDelayed(frameCallback, delayMs)
+    }
+
+    /** 立即把帧循环拉回全帧率：撤销可能排队的静止段延后回调，避免新动画等延后帧才起步（解码异步，触发帧可能已 idle） */
+    private fun kickFrameNow() {
+        if (!running) return
+        Choreographer.getInstance().removeFrameCallback(frameCallback)
+        framePending = false
+        postFrame()
     }
 
     /** 启动轮播：幂等，已在跑则只补一次 post；stop() 之后调用可重新拉起来 */
@@ -178,7 +208,10 @@ class WallpaperView @JvmOverloads constructor(
                     show(t)
                     return@post
                 }
-                if (!running) return@post
+                if (!running) {
+                    if (bmp != null && bmp !== current && bmp !== previous) bmp.recycle() // 放弃：未上屏即回收，防泄漏
+                    return@post
+                }
                 if (bmp == null) {
                     onWallpaperChange?.invoke(index, names.size) // P1：解码失败回校正回调，撤销调用方的乐观置位
                     return@post
@@ -197,6 +230,7 @@ class WallpaperView @JvmOverloads constructor(
                 index = target
                 switchAtMs = System.currentTimeMillis()
                 onWallpaperChange?.invoke(index, names.size)
+                kickFrameNow() // 新溶解已起：立刻拉回全帧率（帧循环可能停在静止段 idle），别等延后帧才起步
             }
         }
         if (!submitted) advancing = false // P0：View 已销毁提交失败，复位防重入标志，避免后续 show 永久卡死
@@ -226,7 +260,10 @@ class WallpaperView @JvmOverloads constructor(
                 if (bmp == null) start++
             }
             post {
-                if (!running) return@post
+                if (!running) {
+                    if (bmp != null && bmp !== current && bmp !== previous) bmp.recycle() // 放弃：未上屏即回收，防泄漏
+                    return@post
+                }
                 names = found
                 if (names.isEmpty()) return@post
                 // #9 无论成败都武装定时器，否则 doFrame 的 switchAtMs>0 守卫会让 advance 永不触发
@@ -259,7 +296,10 @@ class WallpaperView @JvmOverloads constructor(
                     show(t)
                     return@post
                 }
-                if (!running) return@post
+                if (!running) {
+                    if (bmp != null && bmp !== current && bmp !== previous) bmp.recycle() // 放弃：未上屏即回收，防泄漏
+                    return@post
+                }
                 if (bmp == null) {
                     failStreak++
                     // #9 整轮全失败则退避 holdMs，防止坏资产导致忙循环
@@ -281,6 +321,7 @@ class WallpaperView @JvmOverloads constructor(
                 zoomStart = zoomFor(prevBaseP, dirPrev, prevZoomStart)
                 switchAtMs = System.currentTimeMillis()
                 onWallpaperChange?.invoke(index, names.size)
+                kickFrameNow() // advance 由 doFrame 触发但解码异步，收尾时触发帧已 idle：立刻拉回全帧率起新溶解
             }
         }
         if (!submitted) advancing = false // P0：同 show()，提交失败复位防重入标志
@@ -311,7 +352,8 @@ class WallpaperView @JvmOverloads constructor(
 
         // 旧图淡出：#22 从被换下时的真实进度沿自身轨迹续行，与新图此刻缩放一致
         previous?.let {
-            val prevProgress = prevBaseP + elapsed.toFloat() / kenBurnsMs
+            // P3-18 续行进度夹取，防旧图层推镜越过终点外插（与新图 progress 口径一致）
+            val prevProgress = (prevBaseP + elapsed.toFloat() / kenBurnsMs).coerceIn(0f, 1f)
             drawBitmap(canvas, it, 1f - eased, zoomFor(prevProgress, dirPrev, prevZoomStart))
             if (elapsed > fadeMs) {
                 if (it !== current) it.recycle()
@@ -376,5 +418,9 @@ class WallpaperView @JvmOverloads constructor(
         const val KEN_BURNS_ZOOM_MAX = 1.08f
         /** 拉远方向终点（dir<0），只用于推镜插值起点，不参与解码尺寸 */
         const val KEN_BURNS_ZOOM_MIN = 1.02f
+
+        /** P2-1 静止段延后唤醒下限/上限（ms）：防到点瞬间 spin，也防睡眠过久漏看状态变化 */
+        const val IDLE_MIN_MS = 200L
+        const val IDLE_MAX_MS = 30_000L
     }
 }

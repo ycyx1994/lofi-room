@@ -15,6 +15,7 @@ import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.util.UUID
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -28,6 +29,9 @@ import java.util.zip.ZipOutputStream
 object CustomLibrary {
 
     const val CUSTOM_PREFIX = "custom/"
+
+    /** 内置壁纸文件名编号（wall_NN…）：P3-11 展示名按编号映射，不按排序位置 */
+    private val WALL_NUM = Regex("^wall_(\\d+)")
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val lock = Any()
@@ -93,7 +97,10 @@ object CustomLibrary {
         val names = wallpaperNames
         val n = names.getOrNull(index) ?: return "#$index"
         if (!n.startsWith(CUSTOM_PREFIX)) {
-            val bi = builtinWalls.indexOf(n)
+            // P3-11 按文件名编号映射（wall_NN → 第 NN 张）：删/增文件不移位；
+            // 无编号文件名回退排序位置（与旧行为一致）
+            val bi = WALL_NUM.find(n)?.groupValues?.get(1)?.toIntOrNull()?.let { it - 1 }
+                ?: builtinWalls.indexOf(n)
             if (bi in Playlist.wallpapers.indices) return Playlist.wallpapers[bi].cn
         }
         val f = n.removePrefix(CUSTOM_PREFIX)
@@ -240,14 +247,19 @@ object CustomLibrary {
      */
     @Throws(IOException::class)
     fun importZip(input: InputStream, replace: Boolean): ImportResult {
-        val tmp = File(rootDir.parentFile, "custom.import.tmp")
-        if (tmp.exists()) tmp.deleteRecursively()
+        // P1 并发竞态：tmp 名带唯一后缀，两客户端同时导入不再互踩（原固定名 custom.import.tmp 会被
+        // 对方 deleteRecursively 清掉/写穿）。commit 阶段本就 synchronized(lock)，故唯一 tmp 即收口。
+        sweepStaleImportTmp(rootDir.parentFile) // 清 >1h 崩溃残留的旧 tmp（不误删在飞的并发导入）
+        val tmp = File(rootDir.parentFile, "custom.import.tmp." + UUID.randomUUID())
         File(tmp, "wallpapers").mkdirs()
         File(tmp, "music").mkdirs()
         var entries = 0
         var total = 0L
         var wallCount = 0
         var trackCount = 0
+        // P3-7 落盘去重：不同原名 sanitize 后可能同名（a-b.png / a_b.png → a_b.png），按目录记录已用名防覆盖
+        val usedWall = mutableSetOf<String>()
+        val usedTrack = mutableSetOf<String>()
         try {
             ZipInputStream(input.buffered()).use { zin ->
                 while (true) {
@@ -260,31 +272,22 @@ object CustomLibrary {
                     if (!ImportGuard.isSafeRel(rel)) {
                         throw IOException("非法路径：${e.name}")
                     }
-                    val base = rel.substringAfterLast('/')
-                    // 按扩展名归类，任意目录深度都收（兼容 adb 整目录打包、散文件打包）
-                    val dest: File = when {
-                        rel == "manifest.json" || rel.endsWith("/manifest.json") -> {
-                            total += copyLimited(zin, File(tmp, "manifest.json"), MAX_IMPORT_META)
-                            continue
-                        }
-
-                        rel == "meta.json" || rel.endsWith("/meta.json") -> {
-                            total += copyLimited(zin, File(tmp, "meta.json"), MAX_IMPORT_META)
-                            continue
-                        }
-
-                        ImportGuard.isAllowedExt(rel, ImportGuard.WALL_EXTS) ->
-                            File(File(tmp, "wallpapers"), ImportGuard.sanitize(base))
-
-                        ImportGuard.isAllowedExt(rel, ImportGuard.TRACK_EXTS) ->
-                            File(File(tmp, "music"), ImportGuard.sanitize(base))
-
-                        else -> continue // 目录/白名单外文件跳过
+                    // 按扩展名归类，任意目录深度都收（兼容 adb 整目录打包、散文件打包）；
+                    // 决策纯函数化（ImportGuard.planExtract），集成测试覆盖
+                    val plan = ImportGuard.planExtract(rel, usedWall, usedTrack) ?: continue
+                    if (plan == "manifest.json") {
+                        total += copyLimited(zin, File(tmp, "manifest.json"), MAX_IMPORT_META)
+                        continue
                     }
-                    val cap = if (dest.parentFile.name == "wallpapers") MAX_IMPORT_WALL else MAX_IMPORT_TRACK
+                    if (plan == "meta.json") {
+                        total += copyLimited(zin, File(tmp, "meta.json"), MAX_IMPORT_META)
+                        continue
+                    }
+                    val dest = File(tmp, plan)
+                    val cap = if (plan.startsWith("wallpapers/")) MAX_IMPORT_WALL else MAX_IMPORT_TRACK
                     total += copyLimited(zin, dest, cap)
                     if (total > MAX_IMPORT_TOTAL) throw IOException("备份包过大（解压后 >1GB）")
-                    if (dest.parentFile.name == "wallpapers") wallCount++ else trackCount++
+                    if (plan.startsWith("wallpapers/")) wallCount++ else trackCount++
                 }
             }
             // 以实际落盘为准（zip 内同名文件会覆盖，计数可能与条目数不一致）
@@ -315,6 +318,7 @@ object CustomLibrary {
                 }
             } else {
                 mergeImport(tmp, meta)
+                tmp.deleteRecursively() // P3：merge 成功后清 tmp（meta.json/manifest.json/空目录不再残留）
             }
             notifyChanged()
         } catch (e: Exception) {
@@ -324,18 +328,32 @@ object CustomLibrary {
         return ImportResult(wallCount, trackCount, total)
     }
 
+    /** meta 的 file 键必须是纯文件名（不含目录段、非 . / ..），防脏 meta 用 ../../x 引 app 可读范围内任意文件 */
+    private fun isSafeFileKey(f: String): Boolean =
+        f.isNotBlank() && f == File(f).name && f != "." && f != ".."
+
+    /** 清 >1h 未动的崩溃残留导入 tmp；唯一命名后旧 tmp 不再被下次导入开头清，避免误删在飞的并发导入 */
+    private fun sweepStaleImportTmp(parent: File?) {
+        val cutoff = System.currentTimeMillis() - 60 * 60 * 1000L
+        parent?.listFiles()?.forEach { f ->
+            if (f.isDirectory && f.name.startsWith("custom.import.tmp") && f.lastModified() < cutoff) {
+                f.deleteRecursively()
+            }
+        }
+    }
+
     /** 合并导入：tmp 里的文件并入现有库（落盘名重新生成防冲突），meta 名称映射保留展示名 */
     private fun mergeImport(tmp: File, meta: JSONObject) = synchronized(lock) {
         val wallNames = mutableMapOf<String, String>()
         val w = meta.optJSONArray("wallpapers")
         if (w != null) for (i in 0 until w.length()) {
-            val o = w.getJSONObject(i)
+            val o = w.optJSONObject(i) ?: continue
             wallNames[o.optString("file")] = o.optString("name")
         }
         val trackMeta = mutableMapOf<String, Pair<String, String>>()
         val t = meta.optJSONArray("tracks")
         if (t != null) for (i in 0 until t.length()) {
-            val o = t.getJSONObject(i)
+            val o = t.optJSONObject(i) ?: continue
             trackMeta[o.optString("file")] = o.optString("title") to o.optString("sub")
         }
         File(tmp, "wallpapers").listFiles()?.filter { it.isFile }?.sortedBy { it.name }?.forEach { f ->
@@ -343,7 +361,8 @@ object CustomLibrary {
             f.copyTo(dest, overwrite = true)
             f.delete()
             customWalls = customWalls + dest.name
-            val dn = wallNames[f.name]?.ifBlank { null }
+            // P3-8 meta 展示名消毒后再落 meta
+            val dn = ImportGuard.sanitizeDisplay(wallNames[f.name] ?: "").ifBlank { null }
                 ?: f.name.replaceFirst(Regex("^\\d+_\\d+_"), "").substringBeforeLast('.')
             customWallNames = customWallNames + (dest.name to dn)
         }
@@ -351,7 +370,10 @@ object CustomLibrary {
             val dest = uniqueName(musicDir, f.name)
             f.copyTo(dest, overwrite = true)
             f.delete()
-            val (title, sub) = trackMeta[f.name] ?: ("" to "")
+            val (titleRaw, subRaw) = trackMeta[f.name] ?: ("" to "")
+            // P3-8 zip meta 展示名消毒（控制字符/超长），空串保留给调用方 ifBlank 回退
+            val title = ImportGuard.sanitizeDisplay(titleRaw)
+            val sub = ImportGuard.sanitizeDisplay(subRaw)
             customTracks = customTracks + Track(
                 title.ifBlank { f.name.replaceFirst(Regex("^\\d+_\\d+_"), "").substringBeforeLast('.') },
                 sub.ifBlank { "MY MUSIC · 自定义" },
@@ -386,27 +408,32 @@ object CustomLibrary {
         val wallNames = mutableMapOf<String, String>()
         src.optJSONArray("wallpapers")?.let { arr ->
             for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
+                val o = arr.optJSONObject(i) ?: continue
                 wallNames[o.optString("file")] = o.optString("name")
             }
         }
         val trackMeta = mutableMapOf<String, Pair<String, String>>()
         src.optJSONArray("tracks")?.let { arr ->
             for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
+                val o = arr.optJSONObject(i) ?: continue
                 trackMeta[o.optString("file")] = o.optString("title") to o.optString("sub")
             }
         }
         val w = JSONArray()
         File(dir, "wallpapers").listFiles()?.filter { it.isFile }?.sortedBy { it.name }?.forEach {
-            val nm = wallNames[it.name]?.ifBlank { null }
+            // P3-8 zip meta 展示名先消毒（控制字符/超长），脏串回退文件名派生
+            val nm = ImportGuard.sanitizeDisplay(wallNames[it.name] ?: "").ifBlank { null }
                 ?: it.name.replaceFirst(Regex("^\\d+_\\d+_"), "").substringBeforeLast('.')
             w.put(JSONObject().put("file", it.name).put("name", nm))
         }
         val t = JSONArray()
         File(dir, "music").listFiles()?.filter { it.isFile }?.sortedBy { it.name }?.forEach {
-            val (ti, su) = trackMeta[it.name] ?: ("" to "")
-            t.put(JSONObject().put("file", it.name).put("title", ti).put("sub", su))
+            val (tiRaw, suRaw) = trackMeta[it.name] ?: ("" to "")
+            t.put(
+                JSONObject().put("file", it.name)
+                    .put("title", ImportGuard.sanitizeDisplay(tiRaw))
+                    .put("sub", ImportGuard.sanitizeDisplay(suRaw))
+            )
         }
         return JSONObject().put("wallpapers", w).put("tracks", t)
     }
@@ -431,8 +458,11 @@ object CustomLibrary {
             val dest = File(wallDir, "${System.currentTimeMillis()}_${(0..9999).random()}_$safe")
             if (src.absolutePath != dest.absolutePath) src.copyTo(dest, overwrite = true)
             customWalls = customWalls + dest.name
-            // #24 记住上传原名（去扩展名）做展示名，meta 一起持久化
-            customWallNames = customWallNames + (dest.name to displayName.substringBeforeLast('.').ifBlank { dest.nameWithoutExtension.replaceFirst(Regex("^\\d+_\\d+_"), "") })
+            // #24 记住上传原名（去扩展名）做展示名，meta 一起持久化；P3-8 展示名消毒（控制字符/超长）
+            val dn = ImportGuard.sanitizeDisplay(displayName.substringBeforeLast('.')).ifBlank {
+                dest.nameWithoutExtension.replaceFirst(Regex("^\\d+_\\d+_"), "")
+            }
+            customWallNames = customWallNames + (dest.name to dn)
             saveMetaLocked()
             notifyChanged()
             wallpaperNames.size - 1
@@ -465,9 +495,10 @@ object CustomLibrary {
             val safe = ImportGuard.sanitize(src.name)
             val dest = File(musicDir, "${System.currentTimeMillis()}_${(0..9999).random()}_$safe")
             if (src.absolutePath != dest.absolutePath) src.copyTo(dest, overwrite = true)
+            // P3-8 展示名消毒（控制字符/超长）；脏串回退原 ifBlank 语义
             val t = Track(
-                title.ifBlank { dest.nameWithoutExtension.replaceFirst(Regex("^\\d+_\\d+_"), "") },
-                sub.ifBlank { "MY MUSIC · 自定义" },
+                ImportGuard.sanitizeDisplay(title).ifBlank { dest.nameWithoutExtension.replaceFirst(Regex("^\\d+_\\d+_"), "") },
+                ImportGuard.sanitizeDisplay(sub).ifBlank { "MY MUSIC · 自定义" },
                 dest.absolutePath,
                 isCustom = true
             )
@@ -485,9 +516,10 @@ object CustomLibrary {
         val ci = index - Playlist.tracks.size
         if (ci !in customTracks.indices) return false
         customTracks = customTracks.toMutableList().also {
+            // P3-8 展示名消毒（控制字符/超长）；脏串回退保留原值
             it[ci] = it[ci].copy(
-                title = title.ifBlank { it[ci].title },
-                sub = sub.ifBlank { it[ci].sub }
+                title = ImportGuard.sanitizeDisplay(title).ifBlank { it[ci].title },
+                sub = ImportGuard.sanitizeDisplay(sub).ifBlank { it[ci].sub }
             )
         }
         saveMetaLocked()
@@ -535,25 +567,26 @@ object CustomLibrary {
                 val json = JSONObject(metaFile.readText())
                 val w = json.optJSONArray("wallpapers") ?: JSONArray()
                 for (i in 0 until w.length()) {
-                    val o = w.getJSONObject(i)
+                    val o = w.optJSONObject(i) ?: continue
                     val f = o.optString("file")
-                    if (f.isNotBlank() && File(wallDir, f).exists()) {
+                    if (isSafeFileKey(f) && File(wallDir, f).exists()) {
                         walls.add(f)
-                        // #24 展示名（老 meta 无此字段则回退文件名）
-                        val dn = o.optString("name")
+                        // #24 展示名（老 meta 无此字段则回退文件名）；P3-8 读侧消毒，旧 meta 里的脏串自愈
+                        val dn = ImportGuard.sanitizeDisplay(o.optString("name"))
                         if (dn.isNotBlank()) wallNames[f] = dn
                     }
                 }
                 val t = json.optJSONArray("tracks") ?: JSONArray()
                 for (i in 0 until t.length()) {
-                    val o = t.getJSONObject(i)
+                    val o = t.optJSONObject(i) ?: continue
                     val f = o.optString("file")
                     val file = File(musicDir, f)
-                    if (f.isNotBlank() && file.exists()) {
+                    if (isSafeFileKey(f) && file.exists()) {
                         tracks.add(
                             Track(
-                                o.optString("title").ifBlank { file.nameWithoutExtension.replaceFirst(Regex("^\\d+_\\d+_"), "") },
-                                o.optString("sub").ifBlank { "MY MUSIC · 自定义" },
+                                // P3-8 读侧消毒，旧 meta 里的脏串自愈
+                                ImportGuard.sanitizeDisplay(o.optString("title")).ifBlank { file.nameWithoutExtension.replaceFirst(Regex("^\\d+_\\d+_"), "") },
+                                ImportGuard.sanitizeDisplay(o.optString("sub")).ifBlank { "MY MUSIC · 自定义" },
                                 file.absolutePath,
                                 isCustom = true
                             )

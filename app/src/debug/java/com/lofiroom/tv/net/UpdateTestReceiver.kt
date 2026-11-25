@@ -8,8 +8,8 @@ import java.io.File
 /**
  * 发布演练钩子（E3）：不经过网络下载，直接走"三道闸 → 安装"整条链路，验证多轮发布安全。
  * 用法（adb，仅 debug 包可用）：
- *   adb push update-test.apk /sdcard/Android/data/com.lofiroom.tv/files/update-test.apk
- *   adb shell am broadcast -a com.lofiroom.tv.UPDATE_TEST --ez update_test true
+ *   adb push update-test.apk /sdcard/Android/data/com.lofiroom.tv/files/updates/update-test.apk
+ *   adb shell run-as com.lofiroom.tv am broadcast -a com.lofiroom.tv.UPDATE_TEST --ez update_test true
  * 可选 --es apk <绝对路径> 指定 APK。
  * 任何校验不过（包名/签名/版本回滚）直接丢弃——演练包也不会破坏已装应用。
  *
@@ -27,7 +27,7 @@ class UpdateTestReceiver : BroadcastReceiver() {
             Thread {
                 try {
                     val apk = explicit?.let(::File)
-                        ?: File(app.getExternalFilesDir(null) ?: app.filesDir, "update-test.apk")
+                        ?: File(File(app.getExternalFilesDir(null) ?: app.filesDir, "updates"), "update-test.apk")
                     if (!apk.isFile) return@Thread
                     // 三道闸：可解析+包名一致 / 签名一致 / 归档 versionCode ≥ 当前
                     val ok = UpdateChecker.verify(app, apk) &&

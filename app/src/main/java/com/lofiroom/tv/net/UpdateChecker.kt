@@ -65,6 +65,20 @@ object UpdateChecker {
     /** 64 位十六进制 SHA-256 行：裸哈希 / "sha256=<hex>" / sha256sum 的 "<hex>  文件名" 都收 */
     private val SHA256_LINE_RE = Regex("(?i)^(?:sha256[:=]\\s*)?([0-9a-f]{64})(?:\\s+\\S+)?$")
 
+    /** 下载 URL 白名单：只放行 https + 已知分发域（GitHub 资产/固定名直链/Cloudflare R2 公共桶）。
+     *  API 返回的 browser_download_url 是外部输入，不校验直入候选 = 被劫持 API 可把包指到任意主机。 */
+    private val APK_URL_HOST_RE = Regex("^(?:[a-z0-9-]+\\.)*(?:github\\.com|githubusercontent\\.com|r2\\.dev)$")
+
+    /** URL 是否可信下载源：https 且 host 过白名单（端口只许默认 443） */
+    fun isTrustedApkUrl(url: String): Boolean = try {
+        val u = URL(url)
+        u.protocol == "https" &&
+            (u.port == -1 || u.port == 443) &&
+            APK_URL_HOST_RE.matches(u.host?.lowercase() ?: "")
+    } catch (_: Exception) {
+        false
+    }
+
     /** 校验并归一化版本串；非法（HTML/劫持页/空）返回 null，按检测失败处理 */
     fun parseVersion(raw: String): String? =
         VERSION_RE.matchEntire(raw.trim())?.groupValues?.get(1)
@@ -147,12 +161,19 @@ object UpdateChecker {
             val assets = json.optJSONArray("assets") ?: return null
             var apkUrl = ""
             var apkSize = 0L
+            var sha256: String? = null
             for (i in 0 until assets.length()) {
                 val a = assets.getJSONObject(i)
-                if (a.optString("name").endsWith(".apk")) {
-                    apkUrl = a.optString("browser_download_url")
+                val name = a.optString("name")
+                val url = a.optString("browser_download_url")
+                // 域名白名单（https + github/githubusercontent/r2.dev）：不信任 API 返回的任意下载地址
+                if (!isTrustedApkUrl(url)) continue
+                if (name.endsWith(".apk") && apkUrl.isEmpty()) {
+                    apkUrl = url
                     apkSize = a.optLong("size")
-                    break
+                } else if (name.endsWith(".sha256") && sha256 == null) {
+                    // 发布端哈希旁文件（release.yml 产出）：GitHub 通道同样喂哈希闸
+                    sha256 = httpText(url)?.let { parseSha256(it) }
                 }
             }
             if (apkUrl.isEmpty()) return null
@@ -164,6 +185,7 @@ object UpdateChecker {
                 notes = json.optString("body"),
                 apkUrls = urls,
                 apkSize = apkSize,
+                sha256 = sha256,
             )
         } catch (_: Exception) {
             null
@@ -241,8 +263,8 @@ object UpdateChecker {
         // 大小上限双闸：min(声明大小, 300MB 硬上限)；声明缺失时用硬上限
         val declared = if (declaredSize > 0L) declaredSize else lastRelease?.apkSize ?: 0L
         val maxBytes = if (declared > 0L) minOf(declared, APK_MAX_BYTES) else APK_MAX_BYTES
-        // 待发布端补哈希后可强制：镜像提供 lofiroom-latest.apk.sha256 / version.txt 哈希行时自动强制校验；
-        // 发布端尚未补哈希时（wantSha = null）保持现状跳过校验，不给现有部署加硬依赖
+        // 哈希闸：镜像旁文件/version.txt 哈希行、GitHub .sha256 资产（release.yml 产出）任一提供即强制；
+        // 都缺（历史版本发布端无哈希）时 wantSha = null 跳过校验，不给旧部署加硬依赖
         val wantSha = (expectedSha256 ?: lastRelease?.sha256)?.lowercase()
         for (url in urls) {
             var tries = 0

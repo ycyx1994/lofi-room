@@ -56,6 +56,14 @@ jobs:
             exit 1
           fi
 
+      # 产出 APK 哈希旁文件：sha256sum 行格式（"<hex>  lofiroom-latest.apk"），
+      # 与 UpdateChecker.parseSha256 / SHA256_LINE_RE、deploy-site.sh 上传的 lofiroom-latest.apk.sha256 三处约定一致；
+      # 下载哈希闸（UpdateChecker.download wantSha）据此校验落地前完整性，发布端不补哈希则该校验恒跳过
+      - name: 产出 lofiroom-latest.apk.sha256（哈希闸信任根）
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk lofiroom-latest.apk
+          sha256sum lofiroom-latest.apk | tee lofiroom-latest.apk.sha256
+
       # 签名材料用完即焚（keystore.properties/keystore 仅构建期需要，后续上传/发布步骤不依赖）
       - name: 清理签名材料（keystore/keystore.properties）
         if: always()
@@ -64,20 +72,24 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: lofiroom-release
-          path: app/build/outputs/apk/release/app-release.apk
+          path: |
+            app/build/outputs/apk/release/app-release.apk
+            lofiroom-latest.apk.sha256
           retention-days: 90
 
       - name: 挂到 GitHub Release（仅 v* 标签触发时）
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           cp app/build/outputs/apk/release/app-release.apk "lofiroom-${GITHUB_REF_NAME}.apk"
-          # 固定名直链：releases/latest/download/lofiroom-latest.apk 恒指向最新版，
-          # 供 APK 内多源下载优先使用（不依赖 API 限流、少一次 302 跳转）
-          cp app/build/outputs/apk/release/app-release.apk lofiroom-latest.apk
+          # 固定名直链 lofiroom-latest.apk（上一步已产出）恒指向最新版，
+          # 供 APK 内多源下载优先使用（不依赖 API 限流、少一次 302 跳转）；
+          # lofiroom-latest.apk.sha256 一并挂上，GitHub 通道也能喂到哈希闸
 
       - name: 创建 Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: lofiroom-*.apk
+          files: |
+            lofiroom-*.apk
+            lofiroom-latest.apk.sha256
           generate_release_notes: true

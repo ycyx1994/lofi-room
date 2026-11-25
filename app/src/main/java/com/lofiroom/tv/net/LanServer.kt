@@ -94,14 +94,19 @@ class LanServer(
             // P0 单 IP 并发闸：NanoHTTPD 不暴露 accept 钩子，在 serve 入口按 remoteIpAddress 计数，
             // 超限请求在 parseBody/业务逻辑之前被拒（效果等价 accept 层限流）。LAN 客户端 IP 数有限，条目常驻避免计数竞态
             val ip = session.remoteIpAddress ?: "unknown"
-            val ipCnt = ipConns.computeIfAbsent(ip) { AtomicInteger() }
+            // putIfAbsent（API 1）替代 computeIfAbsent（API 24）：minSdk 21 不能用后者
+            val ipCnt = ipConns[ip] ?: run {
+                val created = AtomicInteger()
+                ipConns.putIfAbsent(ip, created) ?: created
+            }
             if (ipCnt.incrementAndGet() > MAX_CONCURRENT_PER_IP) {
                 ipCnt.decrementAndGet()
                 activeConns.decrementAndGet()
                 return busy()
             }
             try {
-                return route(session)
+                // P2-1 Referrer-Policy：管理页外跳不带 Referer，/t/<token>/ 不经 Referer 外泄
+                return route(session).apply { addHeader("Referrer-Policy", "no-referrer") }
             } catch (e: Exception) {
                 // P2：异常细节（内部路径/类名）只留本地日志，对外固定文案
                 Log.w(TAG, "serve error", e)
@@ -121,6 +126,10 @@ class LanServer(
         val method = session.method
 
         if (method == Method.OPTIONS) return corsPreflight()
+        // P2-1 跨站写闸：POST/PATCH/DELETE 的 Origin/Referer 必须等于本站源（防恶意网页借用户浏览器改库）
+        if (method == Method.POST || method == Method.PATCH || method == Method.DELETE) {
+            if (!sameOriginOk(session)) return json(Status.FORBIDDEN, JSONObject().put("error", "forbidden"))
+        }
         if (path.isEmpty() && method == Method.GET) {
             host.onManagerOpened() // 扫码进入管理页 → 通知 UI 收起菜单/二维码遮罩
             return indexHtml()
@@ -184,6 +193,25 @@ class LanServer(
             }
         }
         return plain(Status.NOT_FOUND, "not found")
+    }
+
+    // ── 跨站请求闸（P2-1）──────────────────────────────────
+
+    /** 从完整 URL 提取 scheme://authority（Referer 是整条 URL，要先摘源再比对） */
+    private val originFromUrl = Regex("^https?://[^/?#]+", RegexOption.IGNORE_CASE)
+
+    /**
+     * P2-1 写方法跨站闸：Origin（有则优先）或 Referer 的源必须等于本站源（http://<Host 头>）。
+     * - 恶意网页的请求带对方 Origin/Referer → 拒（CSRF：借用户浏览器 POST/DELETE/PATCH 改库）；
+     * - "null" 等不透明源按不匹配拒绝；
+     * - 两者皆无 = 非浏览器客户端（curl 等脚本），无 CSRF 面，放行——URL token 仍是必过凭证。
+     */
+    private fun sameOriginOk(session: IHTTPSession): Boolean {
+        val self = "http://${session.headers["host"] ?: return false}"
+        val origin = session.headers["origin"]
+        if (origin != null) return origin.equals(self, ignoreCase = true)
+        val referer = session.headers["referer"] ?: return true
+        return originFromUrl.find(referer.trim())?.value.equals(self, ignoreCase = true)
     }
 
     // ── 页面 / 状态 ────────────────────────────────────────
@@ -257,8 +285,8 @@ class LanServer(
         val part = when (session.parms["part"]) {
             "wall" -> "wall"; "music" -> "music"; else -> "all"
         }
-        // 大音乐包优先走外部缓存（共享存储），避免挤爆内部 cache
-        val tmpDir = context.externalCacheDir ?: context.cacheDir
+        // P3-10：导出含用户自定义内容（隐私），只落应用私有 cache——外部缓存在 Android 9- 可被他 app 读取
+        val tmpDir = context.cacheDir
         sweepStaleExports(tmpDir) // 兜底：下载中断时 close 不触发，清掉超过 1 小时的残留包
         val tmp = File.createTempFile("lofiroom-export", ".zip", tmpDir)
         try {

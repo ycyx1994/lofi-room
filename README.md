@@ -16,7 +16,7 @@
 
 # Lofi Room · CHILLNOVA
 
-一个 Android TV 音乐壁纸播放器（`com.lofiroom.tv`，v1.9.2 / versionCode 12）：打开即播放松音乐
+一个 Android TV 音乐壁纸播放器（`com.lofiroom.tv`，v1.9.3 / versionCode 13）：打开即播放松音乐
 （lofi 爵士 / 咖啡馆氛围），壁纸轮播精美图片，中央优雅文字排版 + 实时音频波形。
 零运行时权限，遥控器与触摸双交互；手机在同一局域网扫码即可上传背景与音乐，App 也能自更新。
 
@@ -74,8 +74,10 @@
 
 - 服务由 NanoHTTPD 2.3.1 内嵌在 App 内，端口从 **8788** 起试、被占用顺延到 **8792**；
   网络变化（断网 / 换 IP）时二维码与地址自动刷新
-- 所有路由都挂在 **`/t/{token}/`** 下：token 为 UUID 去横线的随机串，首次启动生成并存
-  `SharedPreferences`（`lofi_prefs` / `lan_token`），裸路径与错 token 一律 404，避免同网段主机撞接口
+- 所有路由都挂在 **`/t/{token}/`** 下：token 为 UUID 去横线的随机串，**每次启动服务现生成、不落盘**，
+  应用重启即换新（旧二维码失效需重扫），裸路径与错 token 一律 404，避免同网段主机撞接口
+- 写方法（`POST`/`PATCH`/`DELETE`）带跨站闸：请求的 `Origin`/`Referer` 必须等于页面自身源，
+  恶意网页借浏览器改库一律 403；所有响应带 `Referrer-Policy: no-referrer`
 - 管理页本体打包在 APK 内（`assets/h5/index.html`），打开即用，不联网加载前端资源
 - 上传落盘到应用私有目录 `custom/`（`wallpapers/`、`music/`、`meta.json`），落盘名带
   `时间戳_随机_原名` 前缀防冲突；自定义项排在 9 首内置曲目 / 14 张内置壁纸之后，
@@ -125,8 +127,13 @@
   - CUSTOM 页签「检查更新」按钮手动旁路节流；检测进行中重复触发直接跳过
 - **三源**：R2 镜像（`version.txt` / `notes.txt`，无 API 限流）→ GitHub Releases API 兜底；
   下载源按序降级：镜像 APK → 固定名直链 `lofiroom-latest.apk` → API 资产直链。
-  版本串过白名单正则（只接受点分数字），非法响应按检测失败处理
-- **下载**：写 `.part` 断点续传（`Range` + 206，同源最多重试 3 次；服务端不支持 Range 则重下），
+  版本串过白名单正则（只接受点分数字），非法响应按检测失败处理；
+  API 资产直链只收 https + `github.com` / `githubusercontent.com` / `r2.dev` 域名（URL 白名单，防 API 被劫持指向任意主机）
+- **完整性**：版本元数据任一带 APK SHA-256（`version.txt` 哈希行 / 镜像 `.sha256` 旁文件 /
+  GitHub Release `.sha256` 资产，旁文件优先）即强制比对，不过即删半成品终止；
+  都不带（历史版本）跳过。发布端由 CI 产出 `lofiroom-latest.apk.sha256` 一并挂上
+- **下载**：落应用内部目录 `filesDir/updates/`（防他 app 污染半成品），写 `.part` 断点续传
+  （`Range` + 206，同源最多重试 3 次；服务端不支持 Range 则重下），
   30 秒窗口内增量 <256KB 判卡死并换源，完成后校验字节总数对得上才改名为正式 APK；
   取消或换版本时清理半成品
 - **安装前三道闸**（任一不过即拒收）：包名与本应用一致 / 签名与已装版本一致 /
@@ -137,10 +144,11 @@
   系统是否放行静默装由固件与安装来源信任决定，不放行时会出现系统确认页
 - **状态展示**：CUSTOM 页签一行按钮 + 状态行（检查中 / 已是最新 / 发现新版 / 下载中 N% /
   校验中 / 失败原因）+ release notes 前两行摘要；升级后 2 分钟内启动会显示「已更新到 vX.Y」
-- **发布演练**（仅 debug 包）：`adb shell am broadcast -a com.lofiroom.tv.UPDATE_TEST --ez update_test true`
+- **发布演练**（仅 debug 包）：`adb shell run-as com.lofiroom.tv am broadcast -a com.lofiroom.tv.UPDATE_TEST --ez update_test true`
   可跳过网络下载，直接走「三道闸 → 安装」链路（包名/签名/版本任一不符即丢弃）。
   该 receiver 只声明在 `app/src/debug/` 源集（清单 + 类），release 包既无组件也无字节码，
-  且执行前还会校验 `FLAG_DEBUGGABLE`，外部应用无法借此拉起安装流程
+  且带 signature 级自定义权限（普通应用/adb shell 直发广播会被拦，须 run-as 应用自身 uid），
+  执行前还会校验 `FLAG_DEBUGGABLE`，外部应用无法借此拉起安装流程
 
 ## 构建
 
@@ -169,8 +177,9 @@ Gradle 8.11.1 由 wrapper 自动下载（AGP 8.9.3 / Kotlin 2.1.20）。
 
 CI 由 `.github/workflows/release.yml` 负责：push `v*` tag（或手动触发 workflow）时用 JDK 17
 先跑 `testReleaseUnitTest` 与 `lintRelease`（任一失败即中断，不产出包），再还原签名密钥、
-构建 release 包、打印签名 SHA256，并创建 GitHub Release 挂上 `lofiroom-<tag>.apk` 与固定名
-`lofiroom-latest.apk`（应用内更新的固定直链就是它）。
+构建 release 包、打印签名 SHA256，并创建 GitHub Release 挂上 `lofiroom-<tag>.apk`、固定名
+`lofiroom-latest.apk`（应用内更新的固定直链就是它）与 `lofiroom-latest.apk.sha256`
+（APK SHA-256 旁文件，应用内更新哈希闸的信任根）。
 
 release 变体开了 R8（`isMinifyEnabled` + `isShrinkResources`）：dex 从 ~20MB 未压缩降到
 ~6MB，产物 28.8MB（其中 19.6MB 是 9 首 m4a 音频，已压缩格式，继续瘦身只能降码率）。
@@ -235,6 +244,6 @@ app/src/main/
 - 控制面板用 Compose for TV（`androidx.tv:tv-material` 1.0.1 + Compose 1.8.1）：
   遥控/触摸交互走 Compose 焦点系统，视觉沿用手绘时代设计语言；版本组合守住 minSdk 21
 - 局域网管理页：NanoHTTPD 2.3.1 + zxing core 3.5.3（只做二维码编码）；上传走 multipart
-  临时文件，接口全部挂在随机 token 前缀下
+  临时文件，接口全部挂在会话级随机 token 前缀下（每次启动换新）
 - 更新链路：`UpdateChecker`（版本白名单/数值比较/续传下载/三道闸）与 `UpdateScheduler`
   （新鲜度/退避/网络合并）为纯逻辑，配 JVM 单测（junit 4.13.2）

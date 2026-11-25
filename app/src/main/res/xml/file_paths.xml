@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 应用内更新：APK 下载目录（getExternalFilesDir / filesDir 兜底） -->
+<!-- 应用内更新：APK 专用子目录（P3-4：不再暴露整个 files 根，custom/ 等用户内容不进 FileProvider） -->
+<!-- updates_int = filesDir/updates（下载落点）；updates_ext = 外部 files/updates（debug 发布演练 push 落点） -->
 <paths>
-    <external-files-path name="updates_ext" path="." />
-    <files-path name="updates_int" path="." />
+    <external-files-path name="updates_ext" path="updates/" />
+    <files-path name="updates_int" path="updates/" />
 </paths>

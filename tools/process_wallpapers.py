@@ -3,8 +3,9 @@
 """
 Lofi Room TV — 素材处理脚本
 1) 把 wallpapers_raw/gen_*.jpg（AI 生成无文字图）16:9 裁切并导出到 app/src/main/assets/wallpapers/
+   （导出 WebP，与包内 wall_01..14.webp 命名一致）
 2) [可选] 把带叠加文字的参考图用「高斯扩散修复」抹掉（JOBS 配置，当前为空）
-3) 生成 3 张暖色抽象壁纸（渐变+颗粒+暗角）
+3) 生成 3 张暖色抽象壁纸（渐变+颗粒+暗角）——素材储备，写到 wallpapers_raw/，不直接进 assets
 4) 生成应用图标 / Android TV banner
 """
 import os
@@ -124,17 +125,17 @@ def diffusion_inpaint(img, mask, dilate=7, iters=150, blur=2.2):
     out = add_grain(out, mask)
     return out
 
-def save_wall(arr, name, max_w=2560):
+def save_wall(arr, name, max_w=2560, out_dir=None):
     im = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
     if im.width > max_w:
         im = im.resize((max_w, round(im.height * max_w / im.width)), Image.LANCZOS)
-    path = os.path.join(OUT, name)
-    im.save(path, "JPEG", quality=88, optimize=True, progressive=True)
+    path = os.path.join(out_dir or OUT, name)
+    im.save(path, "WEBP", quality=90, method=6)
     print(f"  -> {name}  {im.width}x{im.height}  {os.path.getsize(path)//1024}KB")
 
 # ---------------------------------------------------------------- 每张图的修复配置
 # boxes 为原图坐标 (x0, y0, x1, y1)，圈住烤死的叠加文字。
-# 当前 10 张壁纸均来自 AI 生成无文字图（wallpapers_raw/gen_*.jpg），故为空；
+# 当前 14 张壁纸均来自 AI 生成无文字图（wallpapers_raw/gen_*.jpg），故为空；
 # shot_*/cover_* 仅作风格参考保留在 wallpapers_raw。
 JOBS = []
 
@@ -162,33 +163,33 @@ def save_clean(src, name, max_w=2560):
     if im.width > max_w:
         im = im.resize((max_w, round(im.height * max_w / im.width)), Image.LANCZOS)
     path = os.path.join(OUT, name)
-    im.save(path, "JPEG", quality=88, optimize=True, progressive=True)
+    # 2026-11 对齐包内 assets：WebP（原 JPEG q88）
+    im.save(path, "WEBP", quality=85, method=6)
     print(f"  -> {name}  {im.width}x{im.height}  {os.path.getsize(path)//1024}KB")
 
 print("== 导出无文字生成壁纸 ==")
+# 2026-11 对齐现役 14 张（与 assets/wallpapers/wall_01..14.webp、Playlist.wallpapers 一一对应）：
+# 弃 gen_05_v2 壁炉小猫 / gen_09_v2 炉边小猫 / gen_12 书桌工位，其后编号前移
 for src, name in [
-    ("gen_01.jpg", "wall_01.jpg"),   # 城市夜景
-    ("gen_02.jpg", "wall_02.jpg"),   # 书桌
-    ("gen_03.jpg", "wall_03.jpg"),   # 客厅
-    ("gen_04.jpg", "wall_04.jpg"),   # 窗台植物
-    ("gen_05_v2.jpg", "wall_05.jpg"),   # 壁炉小猫（狸花猫，v2 按真猫照片对齐）
-    ("gen_06.jpg", "wall_06.jpg"),   # 森林单车
-    ("gen_07.jpg", "wall_07.jpg"),   # 雨窗花田
-    ("gen_08.jpg", "wall_08.jpg"),   # 深夜书桌
-    ("gen_09_v2.jpg", "wall_09.jpg"),   # 炉边小猫（狸花猫，v2 按真猫照片对齐）
-    ("gen_10.jpg", "wall_10.jpg"),   # 藤椅窗边
-    ("gen_11.jpg", "wall_11.jpg"),   # 暮色百叶窗
-    ("gen_12.jpg", "wall_12.jpg"),   # 书桌工位
-    ("gen_13.jpg", "wall_13.jpg"),   # 窗边小猫
-    ("gen_14.jpg", "wall_14.jpg"),   # 电视墙
-    ("gen_15.jpg", "wall_15.jpg"),   # 客厅全景
-    ("gen_16.jpg", "wall_16.jpg"),   # 沙发阅读
-    ("gen_17.jpg", "wall_17.jpg"),   # 暖光卧室
+    ("gen_01.jpg", "wall_01.webp"),   # 城市夜景
+    ("gen_02.jpg", "wall_02.webp"),   # 书桌
+    ("gen_03.jpg", "wall_03.webp"),   # 客厅
+    ("gen_04.jpg", "wall_04.webp"),   # 窗台植物
+    ("gen_06.jpg", "wall_05.webp"),   # 森林单车
+    ("gen_07.jpg", "wall_06.webp"),   # 雨窗花田
+    ("gen_08.jpg", "wall_07.webp"),   # 深夜书桌
+    ("gen_10.jpg", "wall_08.webp"),   # 藤椅窗边
+    ("gen_11.jpg", "wall_09.webp"),   # 暮色百叶窗
+    ("gen_13.jpg", "wall_10.webp"),   # 窗边小猫
+    ("gen_14.jpg", "wall_11.webp"),   # 电视墙
+    ("gen_15.jpg", "wall_12.webp"),   # 客厅全景
+    ("gen_16.jpg", "wall_13.webp"),   # 沙发阅读
+    ("gen_17.jpg", "wall_14.webp"),   # 暖光卧室
 ]:
     save_clean(os.path.join(RAW, src), name)
 
 # ---------------------------------------------------------------- 抽象暖色壁纸
-def warm_abstract(seed, palette, name):
+def warm_abstract(seed, palette, name, out_dir=None):
     rng = np.random.default_rng(seed)
     W, H = 2560, 1440
     # 多个暖色光斑叠加
@@ -213,13 +214,14 @@ def warm_abstract(seed, palette, name):
     # 细颗粒
     grain = rng.normal(0, 3.2, (H, W, 1))
     img += grain
-    save_wall(img, name)
+    save_wall(img, name, out_dir=out_dir)
 
 print("== 生成抽象壁纸 ==")
-# 编号避开照片壁纸 wall_01..17
-warm_abstract(7, [(43, 27, 18), (201, 123, 61), (242, 227, 200), (92, 52, 30), (226, 168, 105), (58, 34, 22)], "wall_18.jpg")
-warm_abstract(21, [(28, 22, 20), (170, 92, 48), (235, 205, 168), (74, 40, 26), (212, 138, 82), (36, 26, 22)], "wall_19.jpg")
-warm_abstract(42, [(32, 30, 22), (140, 118, 74), (238, 226, 196), (72, 62, 38), (196, 158, 102), (42, 38, 26)], "wall_20.jpg")
+# 素材储备：写到 wallpapers_raw/（包内 assets 只放 14 张正式壁纸 wall_01..14.webp）；
+# 编号避开照片壁纸 wall_01..14
+warm_abstract(7, [(43, 27, 18), (201, 123, 61), (242, 227, 200), (92, 52, 30), (226, 168, 105), (58, 34, 22)], "wall_18.webp", out_dir=RAW)
+warm_abstract(21, [(28, 22, 20), (170, 92, 48), (235, 205, 168), (74, 40, 26), (212, 138, 82), (36, 26, 22)], "wall_19.webp", out_dir=RAW)
+warm_abstract(42, [(32, 30, 22), (140, 118, 74), (238, 226, 196), (72, 62, 38), (196, 158, 102), (42, 38, 26)], "wall_20.webp", out_dir=RAW)
 
 # ---------------------------------------------------------------- 图标 & TV banner
 # 品牌字标「lofi」：DM Serif Display 小写 + 暖金光晕 + 深蓝黑圆角块（用户提供参考样式）

@@ -39,6 +39,10 @@ checkra1n/
 .wrangler/
 dist/
 wall_contact_sheet.png
+.kotlin/
 
 # iCloud/同步盘产生的重名副本（曾把 "* 2.*" 灌进 app/build，打断 parseDebugLocalResources）
-* 2.*
+# 覆盖任意序号副本（2/3/…/10）与 macOS "copy" 命名；不止 "* 2.*"
+* [0-9].*
+* [0-9][0-9].*
+* copy.*

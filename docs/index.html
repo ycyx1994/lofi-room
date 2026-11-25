@@ -641,7 +641,7 @@
 
   <div class="ver-pill">
     <span class="pulse"></span>
-    最新版本 <b id="ver">v1.9.2</b> · Android 5.0+
+    最新版本 <b id="ver">v1.9.3</b> · Android 5.0+
   </div>
 
   <div class="stage">
@@ -695,8 +695,8 @@
 
     <div class="dl-card reveal">
       <div class="dl-ver">
-        <b id="ver2">v1.9.2</b>
-        <span>versionCode 12 · APK 约 28.8 MB</span>
+        <b id="ver2">v1.9.3</b>
+        <span id="vermeta">versionCode 13 · APK 约 28.8 MB</span>
       </div>
       <div class="dl-btns">
         <a class="btn btn-main" href="https://pub-099f4cba787b49ee8c5b91f97b51bb2b.r2.dev/lofiroom/lofiroom-latest.apk">
@@ -854,18 +854,37 @@
     });
   }
 
-  /* 版本号：R2 镜像实时拉取，失败保持静态 */
+  /* 版本号：R2 镜像实时拉取，失败保持静态。
+     version.txt 可附一行 sha256=<hex>（APK 哈希闸用），先摘哈希行再校验版本格式。 */
   fetch("https://pub-099f4cba787b49ee8c5b91f97b51bb2b.r2.dev/lofiroom/version.txt")
     .then(function (r) { return r.ok ? r.text() : Promise.reject(); })
     .then(function (txt) {
-      txt = txt.trim();
-      if (/^v?\d+(\.\d+){0,3}$/.test(txt)) {
-        var v = "v" + txt.replace(/^v/, "");
+      var line = (txt.split(/\r?\n/).filter(function (l) {
+        l = l.trim();
+        return l && !/^sha256[:=]/i.test(l);
+      })[0] || "").trim();
+      if (/^v?\d+(\.\d+){0,3}$/.test(line)) {
+        var v = "v" + line.replace(/^v/, "");
         var a = document.getElementById("ver");
         var b = document.getElementById("ver2");
         if (a) a.textContent = v;
         if (b) b.textContent = v;
       }
+    })
+    .catch(function () {});
+
+  /* 版本明细行（versionCode · APK 大小）：meta.txt 同源刷新（deploy-site.sh 产出），失败保持静态 */
+  fetch("https://pub-099f4cba787b49ee8c5b91f97b51bb2b.r2.dev/lofiroom/meta.txt")
+    .then(function (r) { return r.ok ? r.text() : Promise.reject(); })
+    .then(function (txt) {
+      var vc = (txt.match(/versionCode=(\d+)/) || [])[1];
+      var size = (txt.match(/size=(\d+)/) || [])[1];
+      var el = document.getElementById("vermeta");
+      if (!el) return;
+      var parts = [];
+      if (vc) parts.push("versionCode " + vc);
+      if (size) parts.push("APK 约 " + (Math.round(parseInt(size, 10) / 104857.6) / 10) + " MB");
+      if (parts.length) el.textContent = parts.join(" · ");
     })
     .catch(function () {});
 })();

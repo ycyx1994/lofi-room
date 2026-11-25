@@ -194,7 +194,11 @@ class MainActivity : ComponentActivity() {
 
         // #14 记忆自动切换开关（默认关）与选中的壁纸（默认城市夜景）
         wallpaper.autoRotate = prefs.getBoolean("auto_rotate", false)
-        wallpaper.startIndex = prefs.getInt("wallpaper_index", 0)
+        // P3-13 按文件名恢复壁纸（库增删不移位）；旧版 int 键兜底
+        val savedWall = prefs.getString("wallpaper_name", null)
+            ?.let { nm -> CustomLibrary.wallpaperNames.indexOf(nm).takeIf { it >= 0 } }
+            ?: prefs.getInt("wallpaper_index", 0)
+        wallpaper.startIndex = savedWall
         autoRotateState.value = wallpaper.autoRotate
         wallpaper.onWallpaperChange = { index, total ->
             rotateCaption(index)
@@ -232,8 +236,10 @@ class MainActivity : ComponentActivity() {
 
         // 应用内更新：A2 调度检测（启动档 3h 新鲜度/退避/网络合并由 UpdateScheduler 保证）
         updateScheduler.checkedAt = updatePrefs.getLong("checked_at", 0L)
-        val updateDir = getExternalFilesDir(null) ?: filesDir
+        val updateDir = File(filesDir, "updates").apply { mkdirs() } // P3-5：内部子目录，防 Android 9- 外部 .part 被他 app 污染
         UpdateChecker.cleanupStale(updateDir, currentVersionName()) // 清过期 APK/断点残留
+        // 旧版下载目录（外部 files 根）残留清理：迁移后一次性扫掉 update-* 残留
+        getExternalFilesDir(null)?.let { UpdateChecker.cleanupStale(it, currentVersionName()) }
         if (!detectJustUpdated()) checkUpdate(UpdateScheduler.Trigger.STARTUP)
 
         // #12 启动遮罩：字标淡入 + 兜底撤除（防止首图解码失败时永久遮挡）
@@ -420,8 +426,9 @@ class MainActivity : ComponentActivity() {
 
     /** #23 启动局域网 H5 服务并生成二维码；无局域网 IP 时留空，CUSTOM 页签显示引导 */
     private fun startLanServer() {
-        val token = prefs.getString("lan_token", null) ?: UUID.randomUUID().toString().replace("-", "")
-        prefs.edit().putString("lan_token", token).apply()
+        // P2-1 会话级 token：每次启动换新、不落盘；旧版永久 token 顺手作废
+        val token = UUID.randomUUID().toString().replace("-", "")
+        prefs.edit().remove("lan_token").apply()
         val server = LanServer(this, lanHost, token)
         lanServer = server
         if (!server.start()) return
@@ -463,7 +470,7 @@ class MainActivity : ComponentActivity() {
             // H5 高亮修复：应用意图先同步落状态/偏好——H5 apply 返回后立即读 state 就是新图，
             // 无需等异步解码回调（原先回调才更新 → 刷新读到旧值 → 高亮要点两次）
             appliedWallState.intValue = index
-            prefs.edit().putInt("wallpaper_index", index).apply()
+            persistWallpaper(index)
             // 越界目标不再静默丢弃：交给 WallpaperView #24 暂存补发（刚上传的图名单未同步）
             runOnUiThread { wallpaper.show(index) }
         }
@@ -560,7 +567,7 @@ class MainActivity : ComponentActivity() {
                     if (i in 0 until wallpaper.count) {
                         appliedWallState.intValue = i // 乐观置位：金框立即跟随点击，解码落定后回调校正
                         wallpaper.show(i)
-                        prefs.edit().putInt("wallpaper_index", i).apply()
+                        persistWallpaper(i)
                     }
                 },
                 pendingDeleteWall = pendingDeleteWall.intValue,
@@ -627,14 +634,18 @@ class MainActivity : ComponentActivity() {
         }
         // 库变更（删除）后清掉已移除壁纸的缩略图残留，防止内存驻留与后续串图
         val nameSet = names.toSet()
-        handler.post { thumbs.keys.retainAll(nameSet) }
-        Thread {
-            for (n in names) {
-                if (!thumbs.containsKey(n)) decodeThumb(n)?.let { bmp ->
-                    handler.post { thumbs[n] = bmp }
+        // thumbs 是 mutableStateMapOf（非线程安全）：retainAll / containsKey / 写回全部收口主线程，
+        // 后台解码线程只遍历不可变 missing 列表（不再跨线程读 thumbs → 消除 CME/丢写/重复解码）
+        handler.post {
+            thumbs.keys.retainAll(nameSet)
+            val missing = names.filterNot { thumbs.containsKey(it) }
+            if (missing.isEmpty()) return@post
+            Thread {
+                for (n in missing) {
+                    decodeThumb(n)?.let { bmp -> handler.post { thumbs[n] = bmp } }
                 }
-            }
-        }.start()
+            }.start()
+        }
     }
 
     // ── 遥控器 / 按键交互 ────────────────────────────────────
@@ -748,7 +759,7 @@ class MainActivity : ComponentActivity() {
         val tag = "g$gen"                         // 本代独占文件名后缀：.apk / .apk.part 都不与别代同名
         applyUpdateState(UpdateState.Downloading(rel.versionName, -1))
         Thread {
-            val dir = getExternalFilesDir(null) ?: filesDir
+            val dir = File(filesDir, "updates").apply { mkdirs() }                           // P3-5：内部子目录，.part 不暴露共享存储
             val base = File(dir, "update-${rel.versionName}.apk")           // 老命名基名（供 tag 派生）
             val apk = UpdateChecker.downloadTarget(dir, rel.versionName, tag) // 与 download 落地文件同一路径
             val ok = UpdateChecker.download(
@@ -761,6 +772,8 @@ class MainActivity : ComponentActivity() {
                 },
                 cancelled = { !alive() },
                 tag = tag,
+                declaredSize = rel.apkSize,
+                expectedSha256 = rel.sha256,
             )
             handler.post {
                 // 取消或被新代取代：本代 .part 已由 download 的 CANCELLED 分支删掉，
@@ -1045,13 +1058,21 @@ class MainActivity : ComponentActivity() {
         handler.postDelayed(r, ViewConfiguration.getLongPressTimeout().toLong())
     }
 
+    /** P3-13 壁纸记忆按文件名持久化（库增删不移位）；int 键保留给旧版/无名回退 */
+    private fun persistWallpaper(index: Int) {
+        prefs.edit()
+            .putInt("wallpaper_index", index)
+            .putString("wallpaper_name", CustomLibrary.wallpaperNames.getOrNull(index) ?: "")
+            .apply()
+    }
+
     /** 长按切背景：环形切换 + 记忆选择，静默切换不打扰 */
     private fun switchWallpaper(delta: Int) {
         val n = wallpaper.count
         if (n <= 0) return
         val target = ((appliedWallState.intValue + delta) % n + n) % n
         appliedWallState.intValue = target
-        prefs.edit().putInt("wallpaper_index", target).apply()
+        persistWallpaper(target)
         wallpaper.show(target)
     }
 
@@ -1071,6 +1092,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         activityResumed = true
+        wallpaper.start() // P2-1：回前台重启壁纸帧循环（stop/start 幂等，后台已停，避免退后台仍解码/空转）
         configureWindow()
         hideSystemBars()
         // C1 确认页 1.5s 闪退判定回调；回前台补一次调度检查（3h 新鲜度内自动跳过）
@@ -1080,6 +1102,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         activityResumed = false
+        wallpaper.stop() // P2-1：退后台停壁纸帧循环，避免 onStop 后 Choreographer 仍 60fps 空转 + 后台每 15min 解码整屏壁纸
         super.onPause()
     }
 

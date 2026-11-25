@@ -156,11 +156,98 @@ class ImportGuardTest {
     }
 
     @Test
-    fun sanitize_does_not_truncate_long_names() {
-        // [怪] 没有长度上限：>255 字节的文件名会在落盘时由文件系统抛错（导入整体失败）
+    fun sanitize_truncates_long_names_but_keeps_ext() {
+        // 2026-11-20 review P3-7：>255B 文件名落盘抛错 → stem 截 64，扩展名保留
         val long = "a".repeat(200) + ".png"
-        assertEquals(204, ImportGuard.sanitize(long).length)
-        assertEquals(long, ImportGuard.sanitize(long))
+        assertEquals("a".repeat(64) + ".png", ImportGuard.sanitize(long))
+        assertEquals(68, ImportGuard.sanitize(long).length)
+        // 无扩展名整串截 64
+        assertEquals(64, ImportGuard.sanitize("b".repeat(200)).length)
+        // 扩展名段也限长 8（含点，防展示名尾巴灌长串）
+        assertEquals("x." + "z".repeat(7), ImportGuard.sanitize("x." + "z".repeat(50)))
+    }
+
+    @Test
+    fun sanitize_truncates_cjk_safely_under_255_bytes() {
+        // 64 个 CJK（3B/char）+ uniqueName 前缀 ~20B ≈ 212B < 255B 文件名上限
+        val s = ImportGuard.sanitize("中".repeat(300) + ".png")
+        assertEquals(64, s.removeSuffix(".png").length)
+    }
+
+    // ── dedupeName：同目录落盘名去重 ─────────────────────
+
+    @Test
+    fun dedupeName_keeps_first_and_suffixes_collisions() {
+        val taken = mutableSetOf<String>()
+        assertEquals("a_b.png", ImportGuard.dedupeName("a_b.png", taken))
+        // a-b.png sanitize 后同名：后到者 -2/-3…（扩展名之前）
+        assertEquals("a_b-2.png", ImportGuard.dedupeName("a_b.png", taken))
+        assertEquals("a_b-3.png", ImportGuard.dedupeName("a_b.png", taken))
+    }
+
+    @Test
+    fun dedupeName_handles_no_ext_and_dot_names() {
+        val taken = mutableSetOf<String>()
+        assertEquals("x", ImportGuard.dedupeName("x", taken))
+        assertEquals("x-2", ImportGuard.dedupeName("x", taken))
+        // 点开头不拆段：冲突后缀追加整串尾
+        assertEquals(".env", ImportGuard.dedupeName(".env", taken))
+        assertEquals(".env-2", ImportGuard.dedupeName(".env", taken))
+    }
+
+    // ── sanitizeDisplay：展示名消毒 ───────────────────────
+
+    @Test
+    fun sanitizeDisplay_strips_control_and_invisible_chars() {
+        assertEquals("a b", ImportGuard.sanitizeDisplay("a\u0000b"))
+        assertEquals("ab", ImportGuard.sanitizeDisplay("a\u200bb"))
+        assertEquals("ab", ImportGuard.sanitizeDisplay("a\ufeffb"))
+        // bidi 控制字符剥掉（防显示欺骗）
+        assertEquals("abc", ImportGuard.sanitizeDisplay("a\u202ebc"))
+        // 换行/制表变空格、首尾空白剥
+        assertEquals("a b", ImportGuard.sanitizeDisplay(" a\nb\t"))
+    }
+
+    @Test
+    fun sanitizeDisplay_caps_length_and_may_return_blank() {
+        assertEquals(200, ImportGuard.sanitizeDisplay("x".repeat(500)).length)
+        // 纯控制字符 → 空串，调用方 ifBlank 回退
+        assertEquals("", ImportGuard.sanitizeDisplay("\u0000\u200b"))
+        assertEquals("", ImportGuard.sanitizeDisplay("   "))
+    }
+
+    // ── planExtract：importZip 抽取决策集成（P3-6）────────
+
+    @Test
+    fun planExtract_full_import_pipeline_over_realistic_entries() {
+        // 模拟 importZip 决策链：normalizeEntry → isSafeRel → planExtract（含跨条目去重）
+        val usedWall = mutableSetOf<String>()
+        val usedTrack = mutableSetOf<String>()
+        fun plan(raw: String): String? {
+            val rel = ImportGuard.normalizeEntry(raw)
+            if (!ImportGuard.isSafeRel(rel)) throw IllegalArgumentException(raw)
+            return ImportGuard.planExtract(rel, usedWall, usedTrack)
+        }
+        // meta / manifest 任意目录深度都认
+        assertEquals("meta.json", plan("custom/meta.json"))
+        assertEquals("manifest.json", plan("backup/manifest.json"))
+        // 壁纸/音乐按扩展名分拣，目录被剥
+        assertEquals("wallpapers/a.png", plan("custom/wallpapers/a.png"))
+        assertEquals("music/a.mp3", plan("music/deep/a.mp3"))
+        // 跨条目 sanitize 碰撞去重（"a b.png" / "a?b.png" 都整形为 a_b.png）
+        assertEquals("wallpapers/a_b.png", plan("wallpapers/a b.png"))
+        assertEquals("wallpapers/a_b-2.png", plan("wallpapers/a?b.png"))
+        // 超长截断在决策里生效（stem 64 + ext 保）
+        assertEquals("wallpapers/" + "中".repeat(64) + ".webp", plan("wallpapers/" + "中".repeat(300) + ".webp"))
+        // 白名单外跳过（exe / 无扩展名 / 目录名）
+        assertEquals(null, plan("wallpapers/evil.exe"))
+        assertEquals(null, plan("music/noext"))
+        // 穿越在 isSafeRel 先被拦（决策不可达）
+        try {
+            plan("wallpapers/../../etc/passwd")
+            throw AssertionError("穿越未拦截")
+        } catch (_: IllegalArgumentException) {
+        }
     }
 
     // ── 组合：一个真实 zip 条目名的完整判定链 ───────────────
