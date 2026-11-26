@@ -35,8 +35,8 @@ android {
         applicationId = "com.lofiroom.tv"
         minSdk = 21
         targetSdk = 34
-        versionCode = 14
-        versionName = "1.9.4"
+        versionCode = 15
+        versionName = "1.9.5"
     }
 
     signingConfigs {

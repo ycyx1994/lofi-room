@@ -16,7 +16,7 @@
 
 # Lofi Room · CHILLNOVA
 
-一个 Android TV 音乐壁纸播放器（`com.lofiroom.tv`，v1.9.4 / versionCode 14）：打开即播放松音乐
+一个 Android TV 音乐壁纸播放器（`com.lofiroom.tv`，v1.9.5 / versionCode 15）：打开即播放松音乐
 （lofi 爵士 / 咖啡馆氛围），壁纸轮播精美图片，中央优雅文字排版 + 实时音频波形。
 零运行时权限，遥控器与触摸双交互；手机在同一局域网扫码即可上传背景与音乐，App 也能自更新。
 
