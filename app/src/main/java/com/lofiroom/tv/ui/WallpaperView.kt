@@ -188,24 +188,36 @@ class WallpaperView @JvmOverloads constructor(
             pendingShow = target // 溶解进行中：本轮收尾 replayPending 补发
             return
         }
-        if (!force && target == index) {
+        if (!force && target == index && current != null) { // #25 带 current 条件：首图全坏后 index 停在 0 时不再误判"已经是这张"
             pendingShow = -1 // 已经是这张：最新意图即取消更早的暂存
             return
         }
         pendingShow = -1 // 成交的 show 是最新意图，作废更早的暂存
         advancing = true
-        val targetName = names[target]
+        val list = names // 主线程捕获快照，后台线程不读 names
         val submitted = submit {
-            val bmp = decode(targetName)
+            // #25 坏图跳过：目标解不开就顺着列表继续试一轮，全都解不开才放弃校正。
+            // 否则长按切换撞上坏文件时 appliedWallState 被 P1 校正弹回，下一按又算出同一目标——"换不过去"
+            var t = target
+            var bmp: Bitmap? = null
+            var tried = 0
+            while (bmp == null && tried < list.size) {
+                bmp = decode(list[t])
+                if (bmp == null) {
+                    t = (t + 1) % list.size
+                    tried++
+                }
+            }
+            val applied = if (bmp != null) t else target // 实际落点；全坏时保持原目标用于收尾校正
             post {
                 advancing = false
                 // #24 收尾时若已有更新的应用意图，本次结果作废改道（新图未上屏可直接回收）
-                val t = pendingShow
-                if (t == target) pendingShow = -1
-                if (running && t >= 0 && t != target && t in names.indices) {
+                val p = pendingShow
+                if (p == applied) pendingShow = -1
+                if (running && p >= 0 && p != applied && p in names.indices) {
                     if (bmp != null && bmp !== current && bmp !== previous) bmp.recycle()
                     pendingShow = -1
-                    show(t)
+                    show(p)
                     return@post
                 }
                 if (!running) {
@@ -227,7 +239,8 @@ class WallpaperView @JvmOverloads constructor(
                 dirPrev = dirCurrent
                 dirCurrent = -dirCurrent
                 zoomStart = zoomFor(prevBaseP, dirPrev, prevZoomStart)
-                index = target
+                index = applied // #25 落点是跳过后实际显示的那张，面板金框与画面一致
+                failStreak = 0
                 switchAtMs = System.currentTimeMillis()
                 onWallpaperChange?.invoke(index, names.size)
                 kickFrameNow() // 新溶解已起：立刻拉回全帧率（帧循环可能停在静止段 idle），别等延后帧才起步
@@ -253,11 +266,16 @@ class WallpaperView @JvmOverloads constructor(
             // #23 走合并库：内置 assets + 自定义 custom/（命名约定见 CustomLibrary）
             val found = CustomLibrary.wallpaperNames
             // #9 跳过排在前面的坏文件，找到第一张能解码的（从 startIndex 起找，支持记忆的默认图）
+            // #25 环形扫一圈：旧逻辑只向尾部扫，startIndex 靠后时尾部连续坏文件会整库找不到首图黑屏
             var start = startIndex.coerceIn(0, (found.size - 1).coerceAtLeast(0))
             var bmp: Bitmap? = null
-            while (start < found.size && bmp == null) {
+            var tried = 0
+            while (bmp == null && tried < found.size) {
                 bmp = decode(found[start])
-                if (bmp == null) start++
+                if (bmp == null) {
+                    start = (start + 1) % found.size
+                    tried++
+                }
             }
             post {
                 if (!running) {
@@ -281,13 +299,24 @@ class WallpaperView @JvmOverloads constructor(
     private fun advance() {
         if (names.isEmpty() || advancing) return // #1 防重入
         advancing = true
-        val next = (index + 1) % names.size
-        val nextName = names[next] // 主线程捕获，后台线程不读 names
+        val list = names // 主线程捕获快照，后台线程不读 names
+        val next = (index + 1) % list.size
         val submitted = submit {
-            val bmp = decode(nextName)
+            // #25 坏图跳过：从 next 起继续试，最多一圈；找到能解码的才落点。
+            // 旧逻辑失败也 index=next 会把 index 指向解不开的图，之后 show(target==index) 提前
+            // return 成死区（该图永远选不中）；现在 index 只在真上屏时移动
+            var cand = next
+            var bmp: Bitmap? = null
+            var tried = 0
+            while (bmp == null && tried < list.size) {
+                bmp = decode(list[cand])
+                if (bmp == null) {
+                    cand = (cand + 1) % list.size
+                    tried++
+                }
+            }
             post {
                 advancing = false // #1 无论成败都复位标志
-                index = next // #9 失败也推进，避免卡在同一个坏文件上
                 // #24 自动轮播收尾时若已有用户应用意图，让位改道（新图未上屏可直接回收）
                 val t = pendingShow
                 if (running && t >= 0 && t in names.indices) {
@@ -304,10 +333,11 @@ class WallpaperView @JvmOverloads constructor(
                     failStreak++
                     // #9 整轮全失败则退避 holdMs，防止坏资产导致忙循环
                     if (failStreak >= names.size) switchAtMs = System.currentTimeMillis()
-                    onWallpaperChange?.invoke(index, names.size) // P1：失败推进也同步外部状态，防金框/基准漂移
+                    onWallpaperChange?.invoke(index, names.size) // P1：失败也同步外部状态，防金框/基准漂移
                     return@post
                 }
                 failStreak = 0
+                index = cand // #25 与 show() 同：只在真上屏时移动，落点是跳过后实际显示的那张
                 // #22 推镜接续：同 show()
                 prevBaseP = ((System.currentTimeMillis() - switchAtMs).coerceAtLeast(0L)
                     .toFloat() / kenBurnsMs).coerceIn(0f, 1f)
@@ -334,7 +364,13 @@ class WallpaperView @JvmOverloads constructor(
         // current + previous 常驻 ≈ 26MB，1GB RAM 的盒子上有 OOM 风险，而放大不增加任何清晰度。
         val dm = context.resources.displayMetrics
         val targetW = (maxOf(dm.widthPixels, dm.heightPixels) * KEN_BURNS_ZOOM_MAX).toInt()
-        return CustomLibrary.decodeWallpaper(name, targetW)
+        return try {
+            CustomLibrary.decodeWallpaper(name, targetW)
+        } catch (t: Throwable) {
+            // #25 绝不能让 Error（OOM 等）穿透 executor Runnable：post 收尾不会执行、advancing
+            // 永久卡 true，此后所有 show 只进 pendingShow 从不上屏（"换不过去"+整体冻结）
+            null
+        }
     }
 
     override fun onDraw(canvas: Canvas) {

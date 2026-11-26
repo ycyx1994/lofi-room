@@ -119,6 +119,8 @@ object CustomLibrary {
         val m = Matrix().apply { postRotate(degrees.toFloat()) }
         val fixed = try {
             Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+        } catch (e: OutOfMemoryError) {
+            return bmp // #25 转正要再复制一份位图，内存不够就退回未转正图：能显示总比解不开强
         } catch (e: Exception) {
             return bmp
         }
@@ -126,19 +128,41 @@ object CustomLibrary {
         return fixed
     }
 
-    private fun decodeSampled(name: String, targetWidth: Int): Bitmap? = try {
+    private fun decodeSampled(name: String, targetWidth: Int): Bitmap? {
+        if (targetWidth <= 0) return null
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        openWallpaper(name)?.use { BitmapFactory.decodeStream(it, null, opts) }
-        if (opts.outWidth <= 0) null else {
-            var sample = 1
-            while (opts.outWidth / (sample * 2) >= targetWidth) sample *= 2
-            opts.inSampleSize = sample
-            opts.inJustDecodeBounds = false
+        try {
             openWallpaper(name)?.use { BitmapFactory.decodeStream(it, null, opts) }
-                ?.let { capWidth(it, targetWidth) }
+        } catch (t: Throwable) {
+            return null
         }
-    } catch (e: Exception) {
-        null
+        val ow = opts.outWidth
+        val oh = opts.outHeight
+        if (ow <= 0 || oh <= 0) return null
+        // #25 抽样到 ≥ 目标宽保清晰度（inSampleSize 只能取 2 的幂）
+        var sample = 1
+        while (ow / (sample * 2) >= targetWidth) sample *= 2
+        // #25 内存预算：解码像素 ≤ min(2×targetW², 16MP)。手机直传 4000×3000 时上面的
+        // 循环停在 sample=1 全尺寸解码（ARGB ≈ 48MB），1GB 盒子上是 OOM/GC 风暴；
+        // 旧 catch(Exception) 又接不住 OutOfMemoryError（Error 级），Runnable 当场死掉、
+        // post 不执行、advancing 卡 true——表现就是"选中不生效/换不过去/卡"。
+        val maxPixels = minOf(targetWidth.toLong() * targetWidth * 2, 16_000_000L)
+        while (sample < 64 && ow / sample.toLong() * (oh / sample.toLong()) > maxPixels) sample *= 2
+        // #25 解码失败/OOM 时按 2 倍抽样重试（封顶 64），仍失败返回 null 由调用方跳过该文件
+        while (true) {
+            val bmp = try {
+                val real = BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                    inJustDecodeBounds = false
+                }
+                openWallpaper(name)?.use { BitmapFactory.decodeStream(it, null, real) }
+            } catch (t: Throwable) {
+                null
+            }
+            if (bmp != null) return capWidth(bmp, targetWidth)
+            if (sample >= 64) return null
+            sample *= 2
+        }
     }
 
     /**
